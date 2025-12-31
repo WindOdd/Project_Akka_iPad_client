@@ -117,11 +117,23 @@ class MainViewModel: ObservableObject {
         sttService.resetModel()
     }
     
-    // MARK: - 錄音與 TTS (🔥 修正重點)
+    // MARK: - 錄音與 TTS (🔥 解決按鈕卡死的關鍵修改)
     
     func handleMicButtonTap() {
-        if isRecording { stopAndSend() }
-        else { isRecording = true; sttService.startRecording() }
+        if isRecording {
+            // 停止錄音
+            stopAndSend()
+        } else {
+            // 1. [UI 立即回饋]：先設定變數，讓按鈕瞬間變紅
+            isRecording = true
+            
+            // 2. [背景啟動]：使用 Task 包裹異步呼叫
+            // 這裡會呼叫 STTService 改寫過的 async startRecording
+            // 耗時的 AudioSession 初始化現在是在背景跑，不會卡住這裡的 UI
+            Task {
+                await sttService.startRecording()
+            }
+        }
     }
     
     private func stopAndSend() {
@@ -129,14 +141,14 @@ class MainViewModel: ObservableObject {
         isThinking = true
         
         Task {
-            // 1. 錄音轉文字 (內部會自動 deactivateSession)
+            // 1. 錄音轉文字
             guard let userText = await sttService.stopAndTranscribe(), !userText.isEmpty else {
                 self.isThinking = false
                 self.statusMessage = "聽不清楚，請再說一次"
                 return
             }
             
-            // 2. 開始遮罩
+            // 2. 開始遮罩 (Fake Latency UI)
             startLatencyMasking()
             
             let request = ChatRequest(
@@ -149,7 +161,7 @@ class MainViewModel: ObservableObject {
             
             if let ip = udpService.serverIP {
                 do {
-                    // 更新 UI (User)
+                    // 更新 UI (User Message)
                     self.chatHistory.append(ChatMessage(role: "user", content: userText, intent: ""))
                     
                     // 3. 發送 API 請求
@@ -157,9 +169,6 @@ class MainViewModel: ObservableObject {
                     
                     stopLatencyMasking()
                     self.chatHistory.append(ChatMessage(role: "assistant", content: response.response, intent: response.intent))
-                    
-                    // 🔥 延遲一點點，確保 Session 完全釋放
-                    try? await Task.sleep(nanoseconds: 300_000_000) // 0.3 秒
                     
                     // 4. 開始朗讀
                     speak(response.response)
@@ -199,10 +208,13 @@ class MainViewModel: ObservableObject {
     }
     
     private func speak(_ text: String) {
-        // 🔥 1. 朗讀前：重新啟動 Session (因為錄音結束時關掉了)
-        sttService.activateAudioSession()
+        // 播放前確保 Session 狀態正確 (簡單的防呆，主要工作在 STTService 已經做完了)
+        Task.detached {
+             let session = AVAudioSession.sharedInstance()
+             try? session.setCategory(.playback, mode: .default)
+             try? session.setActive(true)
+        }
         
-        // 2. 強制在主執行緒執行，避免 unsafeForcedSync 警告
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             

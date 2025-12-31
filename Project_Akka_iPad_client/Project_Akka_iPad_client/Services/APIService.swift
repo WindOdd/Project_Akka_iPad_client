@@ -37,6 +37,11 @@ class APIService: ObservableObject {
         let (data, _) = try await URLSession.shared.data(from: url)
         
         // 解析並回傳關鍵字字串陣列
+        if let rawJSON = String(data: data, encoding: .utf8) {
+                    print("📦 [API 2 Raw Keywords]: \(rawJSON)")
+                }
+                
+                // 解析並回傳關鍵字字串陣列
         let decodedResponse = try JSONDecoder().decode(STTKeywordsResponse.self, from: data)
         return decodedResponse.keywords
     }

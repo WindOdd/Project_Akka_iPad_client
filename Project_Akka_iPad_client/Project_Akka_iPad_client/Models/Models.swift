@@ -17,8 +17,8 @@ struct GameInfo: Codable, Identifiable {
 // MARK: - API 2: 取得 STT 修正關鍵字 (Get STT Keywords)
 
 struct STTKeywordsResponse: Codable {
-    let id: String
-    let correction_enabled: Bool
+    let id: String?
+    let correction_enabled: Bool?
     let keywords: [String]
 }
 
