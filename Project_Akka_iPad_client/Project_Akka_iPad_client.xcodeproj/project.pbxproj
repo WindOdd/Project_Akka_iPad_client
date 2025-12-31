@@ -264,6 +264,8 @@
 				DEVELOPMENT_TEAM = U2L7ZJ7SL7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Project-Akka-iPad-client-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "需要區域網路權限以搜尋阿卡伺服器";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "需要麥克風來與阿卡語音助理對話";
@@ -300,6 +302,8 @@
 				DEVELOPMENT_TEAM = U2L7ZJ7SL7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Project-Akka-iPad-client-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "需要區域網路權限以搜尋阿卡伺服器";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "需要麥克風來與阿卡語音助理對話";
