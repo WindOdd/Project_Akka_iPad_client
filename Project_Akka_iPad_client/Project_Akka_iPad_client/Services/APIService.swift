@@ -43,21 +43,42 @@ class APIService: ObservableObject {
     
     // MARK: - API 3: 對話請求 (Chat Request)
 
-    func sendChat(ip: String, request: ChatRequest) async throws -> ChatResponse {
-        guard let url = URL(string: "http://\(ip):8000/api/chat") else {
-            throw URLError(.badURL)
+    // MARK: - API 3: 對話請求 (Chat Request)
+
+        func sendChat(ip: String, request: ChatRequest) async throws -> ChatResponse {
+            guard let url = URL(string: "http://\(ip):8000/api/chat") else {
+                throw URLError(.badURL)
+            }
+            
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "POST"
+            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            
+            // 將 request 編碼發送
+            urlRequest.httpBody = try JSONEncoder().encode(request)
+            
+            // 取得回應
+            let (data, response) = try await URLSession.shared.data(for: urlRequest)
+            
+            // 🔥 [Debug 1] 印出 HTTP 狀態碼
+            if let httpResponse = response as? HTTPURLResponse {
+                print("📡 [Chat API Status]: \(httpResponse.statusCode)")
+            }
+            
+            // 🔥 [Debug 2] 印出 Server 回傳的原始 JSON 字串 (關鍵步驟)
+            if let rawString = String(data: data, encoding: .utf8) {
+                print("📦 [Server Raw Response]: \(rawString)")
+            }
+            
+            // 🔥 [Debug 3] 捕捉並印出具體的解析錯誤
+            do {
+                return try JSONDecoder().decode(ChatResponse.self, from: data)
+            } catch {
+                print("❌ [JSON Decoding Error]: \(error)")
+                // 常見錯誤提示：
+                // keyNotFound: Server 少給了某個欄位
+                // typeMismatch: Server 給了字串但 App 預期是數字
+                throw error // 拋出錯誤讓 ViewModel 處理
+            }
         }
-        
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        // 將符合規格的 ChatRequest 結構編碼為 JSON
-        urlRequest.httpBody = try JSONEncoder().encode(request)
-        
-        let (data, _) = try await URLSession.shared.data(for: urlRequest)
-        
-        // 回傳包含 intent 與 response 的物件
-        return try JSONDecoder().decode(ChatResponse.self, from: data)
-    }
 }

@@ -20,30 +20,7 @@ class MainViewModel: ObservableObject {
     @Published var statusMessage = "準備中..."
     @Published var sessionId = UUID().uuidString
     
-    // 🔥 [修改 1] 移除 didSet，變數現在只代表「系統目前生效的值」
-    // 初始化時從 UserDefaults 讀取，若無則預設 "T01"
     @Published var tableId: String = UserDefaults.standard.string(forKey: "saved_table_id") ?? "T01"
-    
-    // MARK: - 新增：手動儲存函式
-    // 🔥 [修改 2] 只有呼叫這個函式時，才會真正修改 Table ID 並寫入磁碟
-    func saveTableId(_ newId: String) {
-        let trimmedId = newId.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        // 檢查是否為空
-        guard !trimmedId.isEmpty else {
-            self.statusMessage = "❌ 桌號不能為空"
-            return
-        }
-        
-        self.tableId = trimmedId
-        UserDefaults.standard.set(trimmedId, forKey: "saved_table_id")
-        
-        // 給予 UI 回饋
-        self.statusMessage = "✅ 桌號已更新為: \(trimmedId)"
-        print("💾 Table ID 手動儲存確認: \(trimmedId)")
-    }
-    
-    // ... (以下這部分保持不變) ...
     
     private var fillerTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
@@ -55,7 +32,6 @@ class MainViewModel: ObservableObject {
     }
     
     private func setupBindings() {
-        // UDP 連線後自動抓取遊戲
         udpService.$serverIP
             .compactMap { $0 }
             .removeDuplicates()
@@ -64,7 +40,6 @@ class MainViewModel: ObservableObject {
             }
             .store(in: &cancellables)
             
-        // STT 狀態同步
         sttService.$statusMessage
             .receive(on: RunLoop.main)
             .assign(to: \.statusMessage, on: self)
@@ -76,6 +51,19 @@ class MainViewModel: ObservableObject {
                 if isLoading { self?.statusMessage = "模型載入中..." }
             }
             .store(in: &cancellables)
+    }
+    
+    // MARK: - 功能操作
+    
+    func saveTableId(_ newId: String) {
+        let trimmedId = newId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedId.isEmpty else {
+            self.statusMessage = "❌ 桌號不能為空"
+            return
+        }
+        self.tableId = trimmedId
+        UserDefaults.standard.set(trimmedId, forKey: "saved_table_id")
+        self.statusMessage = "✅ 桌號已更新為: \(trimmedId)"
     }
     
     func refreshGames(ip: String) async {
@@ -107,6 +95,30 @@ class MainViewModel: ObservableObject {
         self.isThinking = false
     }
     
+    // MARK: - 導航與模型管理
+    
+    func exitGame() {
+        if isRecording { isRecording = false }
+        self.isThinking = false
+        self.selectedGame = nil
+        self.chatHistory.removeAll()
+        self.sessionId = UUID().uuidString
+        self.statusMessage = "請選擇遊戲"
+    }
+    
+    func changeModel(to model: WhisperModel) {
+        exitGame()
+        sttService.switchModel(to: model)
+        Task { await sttService.setupWhisper(keywords: []) }
+    }
+    
+    func reloadModel() {
+        exitGame()
+        sttService.resetModel()
+    }
+    
+    // MARK: - 錄音與 TTS (🔥 修正重點)
+    
     func handleMicButtonTap() {
         if isRecording { stopAndSend() }
         else { isRecording = true; sttService.startRecording() }
@@ -117,12 +129,14 @@ class MainViewModel: ObservableObject {
         isThinking = true
         
         Task {
+            // 1. 錄音轉文字 (內部會自動 deactivateSession)
             guard let userText = await sttService.stopAndTranscribe(), !userText.isEmpty else {
                 self.isThinking = false
                 self.statusMessage = "聽不清楚，請再說一次"
                 return
             }
             
+            // 2. 開始遮罩
             startLatencyMasking()
             
             let request = ChatRequest(
@@ -135,14 +149,26 @@ class MainViewModel: ObservableObject {
             
             if let ip = udpService.serverIP {
                 do {
+                    // 更新 UI (User)
                     self.chatHistory.append(ChatMessage(role: "user", content: userText, intent: ""))
+                    
+                    // 3. 發送 API 請求
                     let response = try await apiService.sendChat(ip: ip, request: request)
+                    
                     stopLatencyMasking()
                     self.chatHistory.append(ChatMessage(role: "assistant", content: response.response, intent: response.intent))
+                    
+                    // 🔥 延遲一點點，確保 Session 完全釋放
+                    try? await Task.sleep(nanoseconds: 300_000_000) // 0.3 秒
+                    
+                    // 4. 開始朗讀
                     speak(response.response)
+                    
                 } catch {
                     stopLatencyMasking()
-                    self.statusMessage = "伺服器連線錯誤"
+                    print("💥 ViewModel Error: \(error.localizedDescription)")
+                    self.statusMessage = "錯誤: \(error.localizedDescription)"
+                    self.isThinking = false
                 }
             } else {
                 self.statusMessage = "尚未連線到 Server"
@@ -173,11 +199,21 @@ class MainViewModel: ObservableObject {
     }
     
     private func speak(_ text: String) {
-        synthesizer.stopSpeaking(at: .immediate)
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
-        utterance.rate = 0.5
-        synthesizer.speak(utterance)
+        // 🔥 1. 朗讀前：重新啟動 Session (因為錄音結束時關掉了)
+        sttService.activateAudioSession()
+        
+        // 2. 強制在主執行緒執行，避免 unsafeForcedSync 警告
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            self.synthesizer.stopSpeaking(at: .immediate)
+            
+            let utterance = AVSpeechUtterance(string: text)
+            utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
+            utterance.rate = 0.5
+            
+            self.synthesizer.speak(utterance)
+        }
     }
     
     private func playFillerAudio(_ type: String) {
