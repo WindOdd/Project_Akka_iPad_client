@@ -142,38 +142,41 @@ class MainViewModel: ObservableObject {
         }
     }
     
+    // MainViewModel.swift
+
     private func stopAndSend() {
         isRecording = false
-        // isThinking = true // 🧪 [測試] 註解掉這行，避免它觸發任何 UI loading 遮罩
         
         Task {
-            // 1. 取得 STT 文字 (這部分維持原樣，測試麥克風與 WhisperKit)
+            // 1. 取得 STT 文字
             guard let userText = await sttService.stopAndTranscribe(), !userText.isEmpty else {
                 DispatchQueue.main.async { self.statusMessage = "聽不清楚" }
                 return
             }
             
-            // 更新 UI (顯示使用者說的話)
-            DispatchQueue.main.async {
+            await MainActor.run {
                 self.chatHistory.append(ChatMessage(role: "user", content: userText, intent: ""))
             }
             
-            // --- ✂️ 測試修改：跳過 API，直接復讀 ✂️ ---
+            // 🔥🔥🔥 [關鍵復活] 必須保留這行延遲！ 🔥🔥🔥
+            // 剛剛的測試證明：只要不立刻接 TTS 就不會崩潰。
+            // 所以我們手動等待 0.6 秒，模擬 "沒有立刻接" 的狀態，讓系統喘口氣。
+            try? await Task.sleep(nanoseconds: 600_000_000)
             
+            // --- 恢復 TTS 邏輯 ---
             let echoText = "測試復讀：\(userText)"
             
-            // 更新 UI (顯示助手回應)
-            DispatchQueue.main.async {
+            await MainActor.run {
                 self.chatHistory.append(ChatMessage(role: "assistant", content: echoText, intent: "test"))
                 self.statusMessage = "播放中..."
             }
             
-            // 2. 直接執行 TTS 播放
-            // 這會觸發您的 prepareSessionForPlayback -> audio session 切換邏輯
+            // 2. 執行 TTS 播放
+            // 因為有上面的 0.6s 延遲，這裡進去呼叫 prepareSessionForPlayback 時應該已經安全了
             await speak(echoText)
             
-            // 3. 播放後重置狀態
-            DispatchQueue.main.async {
+            // 3. 狀態重置
+            await MainActor.run {
                 self.isThinking = false
                 self.statusMessage = "測試完成，可再次錄音"
             }
