@@ -86,22 +86,28 @@ class STTService: ObservableObject {
     
     // MARK: - Audio Session Management (錄音專用)
     
-    nonisolated func activateRecordingSession() {
+    /// 🔧 [修正] 改為 async 以避免 unsafeForcedSync 警告
+    nonisolated func activateRecordingSession() async {
         do {
             let session = AVAudioSession.sharedInstance()
             // 錄音時：必須使用 PlayAndRecord，且系統通常會鎖定在 16kHz (視硬體而定)
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
+            // 給硬體一點時間穩定
+            try await Task.sleep(nanoseconds: 100_000_000) // 0.1s
             print("🎙️ [Audio] Session 設為錄音模式 (Recording Ready)")
         } catch {
             print("❌ [Audio] 錄音 Session 啟動失敗: \(error)")
         }
     }
 
-    nonisolated func deactivateSession() {
+    /// 🔧 [修正] 改為 async 以避免 unsafeForcedSync 警告
+    nonisolated func deactivateSession() async {
         do {
             // 🔥 強制關閉，讓系統硬體時鐘有機會重置
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            // 給硬體時間釋放資源
+            try await Task.sleep(nanoseconds: 100_000_000) // 0.1s
             print("🔴 [Audio] Session 已徹底關閉 (Released)")
         } catch {
             print("⚠️ Session 關閉失敗: \(error)")
@@ -113,13 +119,11 @@ class STTService: ObservableObject {
     func startRecording() async {
         print("🎙️ 準備啟動錄音流程...")
         
-        // 使用 detached task 避免卡死主執行緒 UI
-        let recorder = await Task.detached(priority: .userInitiated) { [weak self] () -> AVAudioRecorder? in
-            guard let self = self else { return nil }
-            
-            // 1. 啟動 Session
-            self.activateRecordingSession()
-            
+        // 🔧 [修正] 直接在背景執行 async 函數，不再使用 detached task 以避免 actor isolation 問題
+        // 1. 啟動 Session (async)
+        await activateRecordingSession()
+        
+        let recorder = await Task.detached(priority: .userInitiated) { () -> AVAudioRecorder? in
             let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("input.wav")
             
             // 2. 設定錄音參數 (Whisper 偏好 16kHz)
@@ -164,10 +168,8 @@ class STTService: ObservableObject {
         audioRecorder = nil
         print("⏹️ 錄音機實例已銷毀")
         
-        // 🔥🔥 [關鍵修正 2] 強制關閉 Session (在背景執行以免卡頓)
-        await Task.detached {
-            self.deactivateSession()
-        }.value
+        // 🔧 [修正] 直接呼叫 async deactivateSession，不再使用 detached task 避免 self capture 問題
+        await deactivateSession()
         
         guard let pipe = pipe, let url = audioFilename else { return nil }
         

@@ -25,9 +25,9 @@ class MainViewModel: ObservableObject {
     private var fillerTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
     //private let synthesizer = AVSpeechSynthesizer()
-    // ✅ [新增] 改為 Optional，每次播放時重新建立
+    // ✅ [修正] 只保留一個 synthesizer 實例，避免衝突
     private var synthesizer: AVSpeechSynthesizer?
-    private var speechSynthesizer: AVSpeechSynthesizer? = AVSpeechSynthesizer()
+    
     init() {
         setupBindings()
         udpService.startDiscovery()
@@ -126,9 +126,10 @@ class MainViewModel: ObservableObject {
     func handleMicButtonTap() {
         // 🔥 [新增] 強制打斷機制
         // 如果正在講話，允許使用者按下按鈕強制停止播放並開始錄音
-        if speechSynthesizer?.isSpeaking ?? false{
+        // 🔧 [修正] 使用統一的 synthesizer 實例
+        if synthesizer?.isSpeaking ?? false {
             print("🛑 [測試] 強制中斷說話")
-            speechSynthesizer?.stopSpeaking(at: .immediate)
+            synthesizer?.stopSpeaking(at: .immediate)
         }
 
         if isRecording {
@@ -183,6 +184,10 @@ class MainViewModel: ObservableObject {
     
     private func speak(_ text: String) async {
             // 1. [背景] 準備播放環境 (包含 0.5s 等待)
+            if let oldSynth = self.synthesizer {
+                oldSynth.stopSpeaking(at: .immediate)
+                self.synthesizer = nil
+            }
             await prepareSessionForPlayback()
             
             // 2. [主執行緒] 重建 Synthesizer
@@ -193,7 +198,7 @@ class MainViewModel: ObservableObject {
             if let oldSynth = self.synthesizer, oldSynth.isSpeaking {
                 oldSynth.stopSpeaking(at: .immediate)
             }
-            
+            try? await Task.sleep(nanoseconds: 50_000_000)
             // 🔥 建立全新的實例 (Clean Slate)
             let newSynthesizer = AVSpeechSynthesizer()
             self.synthesizer = newSynthesizer
@@ -208,22 +213,20 @@ class MainViewModel: ObservableObject {
     
     // 🔥 [核心] nonisolated: 脫離 MainActor，在背景執行
     nonisolated private func prepareSessionForPlayback() async {
+        let session = AVAudioSession.sharedInstance()
         do {
-            let session = AVAudioSession.sharedInstance()
-            
-            // A. [雙重保險] 再次確保 Session 已關閉
+            // A. 確保先關閉之前的狀態
             try? session.setActive(false, options: .notifyOthersOnDeactivation)
             
-            // B. [魔法數字] 等待 0.5 秒 (500ms)
-            // 讓 iOS 背景服務 (audiod) 有足夠時間將硬體從 16kHz 切換回 44.1kHz/48kHz
-            try await Task.sleep(nanoseconds: 500_000_000)
+            // B. 等待硬體時鐘重置 (16kHz -> 44.1kHz)
+            // 🔧 [修正] 增加到 0.8s 以確保硬體完成轉換
+            try await Task.sleep(nanoseconds: 800_000_000) // 0.8s
             
-            // C. 設定為純播放模式 (.playback)
-            // 這是高品質 TTS 喜歡的模式
-            try session.setCategory(.playback, mode: .default)
+            // C. 使用 .spokenAudio 模式，這對 TTS 最安全
+            try session.setCategory(.playback, mode: .spokenAudio, options: .duckOthers)
             try session.setActive(true)
             
-            print("🟢 [Audio] Playback Session 準備就緒")
+            print("🟢 [Audio] Playback Session 準備就緒 (.spokenAudio)")
         } catch {
             print("❌ [Audio] Playback 設定失敗: \(error)")
         }
