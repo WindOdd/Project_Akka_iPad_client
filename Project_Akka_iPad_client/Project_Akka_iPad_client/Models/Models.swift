@@ -20,6 +20,12 @@ struct STTKeywordsResponse: Codable {
     let id: String?
     let correction_enabled: Bool?
     let keywords: [String]
+    
+    enum CodingKeys: String, CodingKey {
+            case id = "game_id"  // 👈 關鍵：把 Server 的 game_id 對應到這裡的 id
+            case correction_enabled
+            case keywords
+        }
 }
 
 // MARK: - API 3: 對話請求 (Chat Request)

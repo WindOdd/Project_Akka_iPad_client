@@ -84,47 +84,45 @@ class STTService: ObservableObject {
         print("🗑 模型記憶體已釋放")
     }
     
-    // MARK: - 音訊 Session 管理 (Helper Methods)
+    // MARK: - Audio Session Management (錄音專用)
     
-    // 🔥 [關鍵修改] 標記為 nonisolated，允許從背景 Task 呼叫
-    nonisolated func activateAudioSession() {
+    nonisolated func activateRecordingSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            // 使用 .playAndRecord 並開啟 mixWithOthers，減少對系統的衝擊
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
+            // 錄音時：必須使用 PlayAndRecord，且系統通常會鎖定在 16kHz (視硬體而定)
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            print("🟢 Audio Session 已啟動 (Background)")
+            print("🎙️ [Audio] Session 設為錄音模式 (Recording Ready)")
         } catch {
-            print("❌ 啟動 Session 失敗: \(error.localizedDescription)")
+            print("❌ [Audio] 錄音 Session 啟動失敗: \(error)")
         }
     }
-    
-    // 🔥 [關鍵修改] 標記為 nonisolated
-    nonisolated func deactivateAudioSession() {
+
+    nonisolated func deactivateSession() {
         do {
+            // 🔥 強制關閉，讓系統硬體時鐘有機會重置
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            print("🔴 Audio Session 已釋放 (Background)")
+            print("🔴 [Audio] Session 已徹底關閉 (Released)")
         } catch {
-            print("⚠️ 釋放 Session 失敗: \(error)")
+            print("⚠️ Session 關閉失敗: \(error)")
         }
     }
     
-    // MARK: - 錄音控制 (🔥 解決 UI 卡死的核心)
+    // MARK: - Recording Logic
     
-    // 1. 改為 async，讓 UI 執行緒可以繼續刷新
     func startRecording() async {
         print("🎙️ 準備啟動錄音流程...")
         
-        // 2. 將「耗時 3~5秒」的硬體初始化工作丟到背景執行緒 (Detached Task)
+        // 使用 detached task 避免卡死主執行緒 UI
         let recorder = await Task.detached(priority: .userInitiated) { [weak self] () -> AVAudioRecorder? in
             guard let self = self else { return nil }
             
-            // A. 這裡執行最耗時的 Session 啟動 (原本卡死 UI 的兇手)
-            self.activateAudioSession()
+            // 1. 啟動 Session
+            self.activateRecordingSession()
             
-            // B. 準備路徑與設定
             let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("input.wav")
             
+            // 2. 設定錄音參數 (Whisper 偏好 16kHz)
             let settings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: 16000,
@@ -132,10 +130,8 @@ class STTService: ObservableObject {
                 AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
             ]
             
-            // C. 初始化 Recorder
             do {
                 let newRecorder = try AVAudioRecorder(url: url, settings: settings)
-                // 這裡只做初始化，不呼叫 record()，因為 record() 最好回主線程呼叫比較保險
                 return newRecorder
             } catch {
                 print("❌ 錄音初始化失敗: \(error)")
@@ -143,16 +139,15 @@ class STTService: ObservableObject {
             }
         }.value
         
-        // 3. 回到 Main Actor (主執行緒) 更新狀態並開始錄音
         if let validRecorder = recorder {
             self.audioRecorder = validRecorder
             self.audioFilename = validRecorder.url
             
-            let success = validRecorder.record()
-            if success {
-                print("🎙️ 錄音正式開始 (UI 應已更新)")
+            // record() 建議在 Main Thread 或由 Recorder 實例所在的 Context 呼叫
+            if validRecorder.record() {
+                print("🎙️ 錄音正式開始")
             } else {
-                print("❌ record() 回傳失敗")
+                print("❌ 呼叫 record() 失敗")
                 self.statusMessage = "無法啟動錄音"
             }
         } else {
@@ -161,13 +156,18 @@ class STTService: ObservableObject {
     }
     
     func stopAndTranscribe() async -> String? {
+        // 1. 停止錄音
         audioRecorder?.stop()
-        print("⏹️ 停止錄音")
         
-        // 4. 錄音結束後釋放資源 (背景執行，避免卡頓)
-        Task.detached {
-            self.deactivateAudioSession()
-        }
+        // 🔥🔥 [關鍵修正 1] 徹底銷毀 Recorder
+        // 這是為了解除 AVAudioRecorder 對 AudioEngine 16kHz 的硬體佔用
+        audioRecorder = nil
+        print("⏹️ 錄音機實例已銷毀")
+        
+        // 🔥🔥 [關鍵修正 2] 強制關閉 Session (在背景執行以免卡頓)
+        await Task.detached {
+            self.deactivateSession()
+        }.value
         
         guard let pipe = pipe, let url = audioFilename else { return nil }
         
@@ -177,10 +177,9 @@ class STTService: ObservableObject {
                 print("⚠️ [STT] 錄音檔不存在")
                 return nil
             }
-            
             let attr = try FileManager.default.attributesOfItem(atPath: url.path)
             let fileSize = attr[.size] as? UInt64 ?? 0
-            if fileSize < 4096 { // 小於 4KB 視為無效
+            if fileSize < 4096 {
                 print("⚠️ [STT] 錄音檔太短 (\(fileSize) bytes)，跳過辨識")
                 return nil
             }
@@ -189,15 +188,14 @@ class STTService: ObservableObject {
             return nil
         }
         
+        // 3. 執行辨識
         let promptText = "繁體中文桌遊對話。關鍵詞：\(currentKeywords.joined(separator: ", "))"
-        
-        // DecodingOptions
+        // 若 WhisperKit 版本支援 initialPrompt，可加入 promptText
         let options = DecodingOptions(language: "zh")
         
         let result = try? await pipe.transcribe(audioPath: url.path, decodeOptions: options)
         let text = result?.first?.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         
-        // 🔥 [Debug] 印出辨識結果
         print("📝 [Whisper 辨識結果]: \(text ?? "nil (無聲)")")
         
         return (text?.isEmpty ?? true) ? nil : text

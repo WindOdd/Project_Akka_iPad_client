@@ -32,6 +32,7 @@ class MainViewModel: ObservableObject {
     }
     
     private func setupBindings() {
+        // UDP 連線後自動抓取遊戲
         udpService.$serverIP
             .compactMap { $0 }
             .removeDuplicates()
@@ -40,6 +41,7 @@ class MainViewModel: ObservableObject {
             }
             .store(in: &cancellables)
             
+        // STT 狀態同步
         sttService.$statusMessage
             .receive(on: RunLoop.main)
             .assign(to: \.statusMessage, on: self)
@@ -117,19 +119,17 @@ class MainViewModel: ObservableObject {
         sttService.resetModel()
     }
     
-    // MARK: - 錄音與 TTS (🔥 解決按鈕卡死的關鍵修改)
+    // MARK: - 錄音與 TTS 流程 (核心修正區域)
     
     func handleMicButtonTap() {
         if isRecording {
             // 停止錄音
             stopAndSend()
         } else {
-            // 1. [UI 立即回饋]：先設定變數，讓按鈕瞬間變紅
+            // 1. UI 立即回饋
             isRecording = true
             
-            // 2. [背景啟動]：使用 Task 包裹異步呼叫
-            // 這裡會呼叫 STTService 改寫過的 async startRecording
-            // 耗時的 AudioSession 初始化現在是在背景跑，不會卡住這裡的 UI
+            // 2. 背景啟動錄音 (避免卡死 UI)
             Task {
                 await sttService.startRecording()
             }
@@ -142,13 +142,14 @@ class MainViewModel: ObservableObject {
         
         Task {
             // 1. 錄音轉文字
+            // (注意：STTService 內部現在會自動銷毀錄音機並關閉 Session)
             guard let userText = await sttService.stopAndTranscribe(), !userText.isEmpty else {
                 self.isThinking = false
                 self.statusMessage = "聽不清楚，請再說一次"
                 return
             }
             
-            // 2. 開始遮罩 (Fake Latency UI)
+            // 2. UI 遮罩
             startLatencyMasking()
             
             let request = ChatRequest(
@@ -161,7 +162,7 @@ class MainViewModel: ObservableObject {
             
             if let ip = udpService.serverIP {
                 do {
-                    // 更新 UI (User Message)
+                    // 更新 User 訊息
                     self.chatHistory.append(ChatMessage(role: "user", content: userText, intent: ""))
                     
                     // 3. 發送 API 請求
@@ -170,8 +171,8 @@ class MainViewModel: ObservableObject {
                     stopLatencyMasking()
                     self.chatHistory.append(ChatMessage(role: "assistant", content: response.response, intent: response.intent))
                     
-                    // 4. 開始朗讀
-                    speak(response.response)
+                    // 4. [TTS 關鍵呼叫] 使用 await 確保音訊切換完成再播放
+                    await speak(response.response)
                     
                 } catch {
                     stopLatencyMasking()
@@ -185,6 +186,51 @@ class MainViewModel: ObservableObject {
             }
         }
     }
+    
+    // MARK: - TTS 安全播放 (🔥 徹底解決 -66748 Crash)
+    
+    private func speak(_ text: String) async {
+        // 1. [背景] 準備播放環境
+        // 這裡包含 0.5秒 的等待，是避免崩潰的關鍵
+        await prepareSessionForPlayback()
+        
+        // 2. [主執行緒] 執行播放 (確保 Session 已就緒)
+        if self.synthesizer.isSpeaking {
+            self.synthesizer.stopSpeaking(at: .immediate)
+        }
+        
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
+        utterance.rate = 0.5
+        
+        print("🔊 [TTS] 開始朗讀: \(text.prefix(10))...")
+        self.synthesizer.speak(utterance)
+    }
+    
+    // 🔥 [核心] nonisolated: 脫離 MainActor，在背景執行
+    nonisolated private func prepareSessionForPlayback() async {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            
+            // A. [雙重保險] 再次確保 Session 已關閉
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            
+            // B. [魔法數字] 等待 0.5 秒 (500ms)
+            // 讓 iOS 背景服務 (audiod) 有足夠時間將硬體從 16kHz 切換回 44.1kHz/48kHz
+            try await Task.sleep(nanoseconds: 500_000_000)
+            
+            // C. 設定為純播放模式 (.playback)
+            // 這是高品質 TTS 喜歡的模式
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+            
+            print("🟢 [Audio] Playback Session 準備就緒")
+        } catch {
+            print("❌ [Audio] Playback 設定失敗: \(error)")
+        }
+    }
+    
+    // MARK: - 思考模擬動畫
     
     private func startLatencyMasking() {
         fillerTimer?.invalidate()
@@ -207,28 +253,7 @@ class MainViewModel: ObservableObject {
         self.statusMessage = "阿卡就緒"
     }
     
-    private func speak(_ text: String) {
-        // 播放前確保 Session 狀態正確 (簡單的防呆，主要工作在 STTService 已經做完了)
-        Task.detached {
-             let session = AVAudioSession.sharedInstance()
-             try? session.setCategory(.playback, mode: .default)
-             try? session.setActive(true)
-        }
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
-            self.synthesizer.stopSpeaking(at: .immediate)
-            
-            let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
-            utterance.rate = 0.5
-            
-            self.synthesizer.speak(utterance)
-        }
-    }
-    
-    private func playFillerAudio(_ type: String) {
+    private func playFillerAudio(_ type: String = "") {
         let generator = UIImpactFeedbackGenerator(style: .light)
         generator.impactOccurred()
     }
