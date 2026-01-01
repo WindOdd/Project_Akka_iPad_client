@@ -324,10 +324,10 @@ struct ContentView: View {
             
             // 🔥 [關鍵邏輯] 麥克風按鈕鎖定判斷
             // 鎖定條件：沒選遊戲 OR 思考中 OR 模型正在下載
-            let isInputBlocked = viewModel.selectedGame == nil ||
+            /*let isInputBlocked = viewModel.selectedGame == nil ||
                                  viewModel.isThinking ||
-                                 viewModel.sttService.isModelLoading
-            
+                                 viewModel.sttService.isModelLoading*/
+            let isInputBlocked = false // 👈 改成這樣，讓按鈕永遠變成紅色/藍色可按狀態
             Button(action: {
                 viewModel.handleMicButtonTap()
             }) {

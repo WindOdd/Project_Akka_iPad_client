@@ -24,8 +24,10 @@ class MainViewModel: ObservableObject {
     
     private var fillerTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
-    private let synthesizer = AVSpeechSynthesizer()
-    
+    //private let synthesizer = AVSpeechSynthesizer()
+    // ✅ [新增] 改為 Optional，每次播放時重新建立
+    private var synthesizer: AVSpeechSynthesizer?
+    private var speechSynthesizer: AVSpeechSynthesizer? = AVSpeechSynthesizer()
     init() {
         setupBindings()
         udpService.startDiscovery()
@@ -122,14 +124,17 @@ class MainViewModel: ObservableObject {
     // MARK: - 錄音與 TTS 流程 (核心修正區域)
     
     func handleMicButtonTap() {
+        // 🔥 [新增] 強制打斷機制
+        // 如果正在講話，允許使用者按下按鈕強制停止播放並開始錄音
+        if speechSynthesizer?.isSpeaking ?? false{
+            print("🛑 [測試] 強制中斷說話")
+            speechSynthesizer?.stopSpeaking(at: .immediate)
+        }
+
         if isRecording {
-            // 停止錄音
             stopAndSend()
         } else {
-            // 1. UI 立即回饋
             isRecording = true
-            
-            // 2. 背景啟動錄音 (避免卡死 UI)
             Task {
                 await sttService.startRecording()
             }
@@ -138,51 +143,38 @@ class MainViewModel: ObservableObject {
     
     private func stopAndSend() {
         isRecording = false
-        isThinking = true
+        // isThinking = true // 🧪 [測試] 註解掉這行，避免它觸發任何 UI loading 遮罩
         
         Task {
-            // 1. 錄音轉文字
-            // (注意：STTService 內部現在會自動銷毀錄音機並關閉 Session)
+            // 1. 取得 STT 文字 (這部分維持原樣，測試麥克風與 WhisperKit)
             guard let userText = await sttService.stopAndTranscribe(), !userText.isEmpty else {
-                self.isThinking = false
-                self.statusMessage = "聽不清楚，請再說一次"
+                DispatchQueue.main.async { self.statusMessage = "聽不清楚" }
                 return
             }
             
-            // 2. UI 遮罩
-            startLatencyMasking()
+            // 更新 UI (顯示使用者說的話)
+            DispatchQueue.main.async {
+                self.chatHistory.append(ChatMessage(role: "user", content: userText, intent: ""))
+            }
             
-            let request = ChatRequest(
-                table_id: self.tableId,
-                session_id: sessionId,
-                game_context: GameContext(game_name: selectedGame?.id ?? ""),
-                user_input: userText,
-                history: Array(chatHistory.suffix(8))
-            )
+            // --- ✂️ 測試修改：跳過 API，直接復讀 ✂️ ---
             
-            if let ip = udpService.serverIP {
-                do {
-                    // 更新 User 訊息
-                    self.chatHistory.append(ChatMessage(role: "user", content: userText, intent: ""))
-                    
-                    // 3. 發送 API 請求
-                    let response = try await apiService.sendChat(ip: ip, request: request)
-                    
-                    stopLatencyMasking()
-                    self.chatHistory.append(ChatMessage(role: "assistant", content: response.response, intent: response.intent))
-                    
-                    // 4. [TTS 關鍵呼叫] 使用 await 確保音訊切換完成再播放
-                    await speak(response.response)
-                    
-                } catch {
-                    stopLatencyMasking()
-                    print("💥 ViewModel Error: \(error.localizedDescription)")
-                    self.statusMessage = "錯誤: \(error.localizedDescription)"
-                    self.isThinking = false
-                }
-            } else {
-                self.statusMessage = "尚未連線到 Server"
+            let echoText = "測試復讀：\(userText)"
+            
+            // 更新 UI (顯示助手回應)
+            DispatchQueue.main.async {
+                self.chatHistory.append(ChatMessage(role: "assistant", content: echoText, intent: "test"))
+                self.statusMessage = "播放中..."
+            }
+            
+            // 2. 直接執行 TTS 播放
+            // 這會觸發您的 prepareSessionForPlayback -> audio session 切換邏輯
+            await speak(echoText)
+            
+            // 3. 播放後重置狀態
+            DispatchQueue.main.async {
                 self.isThinking = false
+                self.statusMessage = "測試完成，可再次錄音"
             }
         }
     }
@@ -190,22 +182,29 @@ class MainViewModel: ObservableObject {
     // MARK: - TTS 安全播放 (🔥 徹底解決 -66748 Crash)
     
     private func speak(_ text: String) async {
-        // 1. [背景] 準備播放環境
-        // 這裡包含 0.5秒 的等待，是避免崩潰的關鍵
-        await prepareSessionForPlayback()
-        
-        // 2. [主執行緒] 執行播放 (確保 Session 已就緒)
-        if self.synthesizer.isSpeaking {
-            self.synthesizer.stopSpeaking(at: .immediate)
+            // 1. [背景] 準備播放環境 (包含 0.5s 等待)
+            await prepareSessionForPlayback()
+            
+            // 2. [主執行緒] 重建 Synthesizer
+            // 這是解決 -66748 的最後一塊拼圖：
+            // 確保合成器是在 AudioSession 變成 Playback 模式「之後」才出生的
+            
+            // 如果舊的還在講，先讓它閉嘴
+            if let oldSynth = self.synthesizer, oldSynth.isSpeaking {
+                oldSynth.stopSpeaking(at: .immediate)
+            }
+            
+            // 🔥 建立全新的實例 (Clean Slate)
+            let newSynthesizer = AVSpeechSynthesizer()
+            self.synthesizer = newSynthesizer
+            
+            let utterance = AVSpeechUtterance(string: text)
+            utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
+            utterance.rate = 0.5
+            
+            print("🔊 [TTS] 開始朗讀 (New Instance): \(text.prefix(10))...")
+            newSynthesizer.speak(utterance)
         }
-        
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
-        utterance.rate = 0.5
-        
-        print("🔊 [TTS] 開始朗讀: \(text.prefix(10))...")
-        self.synthesizer.speak(utterance)
-    }
     
     // 🔥 [核心] nonisolated: 脫離 MainActor，在背景執行
     nonisolated private func prepareSessionForPlayback() async {
