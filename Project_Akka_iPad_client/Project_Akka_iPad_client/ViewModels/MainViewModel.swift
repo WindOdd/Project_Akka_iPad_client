@@ -188,62 +188,67 @@ class MainViewModel: ObservableObject {
     // MARK: - TTS 安全播放 (🔥 徹底解決 -66748 Crash)
     
     private func speak(_ text: String) async {
-            // 1. [背景] 準備播放環境 (包含 0.5s 等待)
+            // 1. [背景] 準備播放環境 (包含 0.5s 等待，幫 TTS 鋪路)
             if let oldSynth = self.synthesizer {
                 oldSynth.stopSpeaking(at: .immediate)
                 self.synthesizer = nil
             }
-            if self.synthesizer != nil {
-                self.synthesizer?.stopSpeaking(at: .immediate)
-                self.synthesizer = nil
-            }
+            
+            // 呼叫我們寫好的鋪路函式
             await prepareSessionForPlayback()
             
             // 2. [主執行緒] 重建 Synthesizer
-            // 這是解決 -66748 的最後一塊拼圖：
-            // 確保合成器是在 AudioSession 變成 Playback 模式「之後」才出生的
-            
-            // 如果舊的還在講，先讓它閉嘴
             if let oldSynth = self.synthesizer, oldSynth.isSpeaking {
                 oldSynth.stopSpeaking(at: .immediate)
             }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            // 🔥 建立全新的實例 (Clean Slate)
+            
+            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s 緩衝
+            
+            // 建立全新的實例
             let newSynthesizer = AVSpeechSynthesizer()
             
-            // 💡 嘗試這行網路建議：讓合成器使用獨立的音訊會話處理
-            // 如果這行導致完全無聲，請將其註解掉
-            newSynthesizer.usesApplicationAudioSession = false
+            // ❌❌❌ [關鍵修正：請刪除或註解掉這行] ❌❌❌
+            // newSynthesizer.usesApplicationAudioSession = false
+            // 註解掉它，代表 "usesApplicationAudioSession = true" (預設值)
+            // 意思就是：「好，我聽你的，我用你準備好的 Session。」
             
             self.synthesizer = newSynthesizer
 
             let utterance = AVSpeechUtterance(string: text)
             utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
-            utterance.rate = AVSpeechUtteranceDefaultSpeechRate // 恢復預設語速
+            utterance.rate = AVSpeechUtteranceDefaultSpeechRate
             
-            print("🔊 [TTS] 嘗試播放 (New Instance, Independent Session): \(text.prefix(10))...")
+            print("🔊 [TTS] 嘗試播放 (使用 Shared Session): \(text.prefix(10))...")
             newSynthesizer.speak(utterance)
         }
+
     
     // 🔥 [核心] nonisolated: 脫離 MainActor，在背景執行
+    // 🔥 [核心修正] 修改 prepareSessionForPlayback
     nonisolated private func prepareSessionForPlayback() async {
         let session = AVAudioSession.sharedInstance()
         do {
-            // A. 先徹底斷開目前的連線
-            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            // 策略變更：不要先 setActive(false)，嘗試直接切換模式
+            // 這通常比「關掉再開」更順暢，不會觸發 4099 錯誤
             
-            // B. 模式震盪：利用切換到 ambient 模式來重置音訊路由
-            try? session.setCategory(.ambient)
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            
-            // C. 正式設定為 TTS 最佳化的模式
-            // 加入 .interruptSpokenAudioAndMixWithOthers 確保它有最高優先權
+            // 1. 直接設定為播放模式
+            // .interruptSpokenAudioAndMixWithOthers 能確保我們拿到主導權
             try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers, .interruptSpokenAudioAndMixWithOthers])
+            
+            // 2. 確保 Session 是活的
             try session.setActive(true)
             
-            print("🟢 [Audio] Playback Session 路由重置完成") 
+            // 3. 給予短暫的硬體鎖定時間
+            try await Task.sleep(nanoseconds: 200_000_000) // 0.2s
+            
+            print("🟢 [Audio] 無縫切換至 Playback Session 完成")
         } catch {
-            print("❌ [Audio] Session 重置失敗: \(error)")
+            print("⚠️ [Audio] 切換失敗，嘗試強制重置: \(error)")
+            // 備案：如果直接切換失敗，才執行「關掉再開」的舊邏輯
+            try? session.setActive(false)
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? session.setCategory(.playback, mode: .spokenAudio)
+            try? session.setActive(true)
         }
     }
     
