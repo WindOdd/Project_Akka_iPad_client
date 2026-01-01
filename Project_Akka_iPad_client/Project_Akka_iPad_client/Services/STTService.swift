@@ -170,7 +170,10 @@ class STTService: ObservableObject {
         
         // 🔧 [修正] 直接呼叫 async deactivateSession，不再使用 detached task 避免 self capture 問題
         await deactivateSession()
-        
+        // 在背景快速釋放 Session
+            await Task.detached {
+                await self.deactivateSession()
+            }.value
         guard let pipe = pipe, let url = audioFilename else { return nil }
         
         // 檔案檢查 (防崩潰)

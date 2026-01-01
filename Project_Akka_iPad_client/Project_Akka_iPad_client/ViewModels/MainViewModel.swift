@@ -188,6 +188,10 @@ class MainViewModel: ObservableObject {
                 oldSynth.stopSpeaking(at: .immediate)
                 self.synthesizer = nil
             }
+            if self.synthesizer != nil {
+                self.synthesizer?.stopSpeaking(at: .immediate)
+                self.synthesizer = nil
+            }
             await prepareSessionForPlayback()
             
             // 2. [主執行緒] 重建 Synthesizer
@@ -198,16 +202,21 @@ class MainViewModel: ObservableObject {
             if let oldSynth = self.synthesizer, oldSynth.isSpeaking {
                 oldSynth.stopSpeaking(at: .immediate)
             }
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(nanoseconds: 300_000_000)
             // 🔥 建立全新的實例 (Clean Slate)
             let newSynthesizer = AVSpeechSynthesizer()
-            self.synthesizer = newSynthesizer
             
+            // 💡 嘗試這行網路建議：讓合成器使用獨立的音訊會話處理
+            // 如果這行導致完全無聲，請將其註解掉
+            newSynthesizer.usesApplicationAudioSession = false
+            
+            self.synthesizer = newSynthesizer
+
             let utterance = AVSpeechUtterance(string: text)
             utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
-            utterance.rate = 0.5
+            utterance.rate = AVSpeechUtteranceDefaultSpeechRate // 恢復預設語速
             
-            print("🔊 [TTS] 開始朗讀 (New Instance): \(text.prefix(10))...")
+            print("🔊 [TTS] 嘗試播放 (New Instance, Independent Session): \(text.prefix(10))...")
             newSynthesizer.speak(utterance)
         }
     
@@ -215,20 +224,21 @@ class MainViewModel: ObservableObject {
     nonisolated private func prepareSessionForPlayback() async {
         let session = AVAudioSession.sharedInstance()
         do {
-            // A. 確保先關閉之前的狀態
+            // A. 先徹底斷開目前的連線
             try? session.setActive(false, options: .notifyOthersOnDeactivation)
             
-            // B. 等待硬體時鐘重置 (16kHz -> 44.1kHz)
-            // 🔧 [修正] 增加到 0.8s 以確保硬體完成轉換
-            try await Task.sleep(nanoseconds: 800_000_000) // 0.8s
+            // B. 模式震盪：利用切換到 ambient 模式來重置音訊路由
+            try? session.setCategory(.ambient)
+            try? await Task.sleep(nanoseconds: 200_000_000)
             
-            // C. 使用 .spokenAudio 模式，這對 TTS 最安全
-            try session.setCategory(.playback, mode: .spokenAudio, options: .duckOthers)
+            // C. 正式設定為 TTS 最佳化的模式
+            // 加入 .interruptSpokenAudioAndMixWithOthers 確保它有最高優先權
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers, .interruptSpokenAudioAndMixWithOthers])
             try session.setActive(true)
             
-            print("🟢 [Audio] Playback Session 準備就緒 (.spokenAudio)")
+            print("🟢 [Audio] Playback Session 路由重置完成") 
         } catch {
-            print("❌ [Audio] Playback 設定失敗: \(error)")
+            print("❌ [Audio] Session 重置失敗: \(error)")
         }
     }
     
