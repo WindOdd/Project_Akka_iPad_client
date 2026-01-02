@@ -91,7 +91,7 @@ class UDPDiscoveryService: ObservableObject {
         
         // --- 執行廣播 ---
         currentRetry += 1
-        let totalAttempts = (currentCycle * maxRetriesPerCycle) + currentRetry
+        _ = (currentCycle * maxRetriesPerCycle) + currentRetry
         
         // 更新 UI (顯示輪數與次數)
         self.statusMessage = "搜尋中 (輪次 \(currentCycle + 1)/\(maxCycles) - 次數 \(currentRetry)/\(maxRetriesPerCycle))..."

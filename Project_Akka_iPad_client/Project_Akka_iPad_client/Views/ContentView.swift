@@ -273,7 +273,8 @@ struct ContentView: View {
     
     // 4. 底部操作區 (包含按鈕鎖定邏輯)
     private var bottomControlArea: some View {
-        VStack {
+        let isInputBlocked = viewModel.isThinking || viewModel.sttService.isModelLoading
+        return VStack {
             // 狀態文字
             if !viewModel.statusMessage.isEmpty && viewModel.selectedGame != nil {
                 Text(viewModel.statusMessage)
@@ -329,7 +330,7 @@ struct ContentView: View {
                         // C. 說話階段 (TTS)        -> 不鎖定 (要能按打斷)
                         // D. 模型載入中             -> 鎖定 (防止錯誤)
                         
-            let isInputBlocked = viewModel.isThinking || viewModel.sttService.isModelLoading
+
             Button(action: {
                 viewModel.handleMicButtonTap()
             }) {
