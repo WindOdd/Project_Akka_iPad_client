@@ -14,7 +14,8 @@ class MainViewModel: ObservableObject {
     @Published var supportedGames: [GameInfo] = []
     @Published var selectedGame: GameInfo?
     @Published var chatHistory: [ChatMessage] = []
-    
+    // 👇 [新增 1] 儲存可用的中文語音列表
+    @Published var availableVoices: [AVSpeechSynthesisVoice] = []
     @Published var isThinking = false
     @Published var isRecording = false
     @Published var statusMessage = "準備中..."
@@ -31,11 +32,39 @@ class MainViewModel: ObservableObject {
     init() {
             setupBindings()
             udpService.startDiscovery()
-            
+            // 👇 [新增 2] 載入支援的語音清單
+            loadVoices()
             // 🔥 [新增] 讓 TTS 代理人綁定 (選配，若未來需要監聽播放結束)
             // synthesizer.delegate = self
     }
-    
+    // 👇 [新增] 抓取系統內的 zh-TW 語音
+        private func loadVoices() {
+            // 過濾出所有繁體中文語音
+            let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "zh-TW" }
+            self.availableVoices = voices
+            print("🗣️ 載入語音數量: \(voices.count)")
+        }
+
+        // 👇 [新增] 讀取 UserDefaults 設定並套用
+        private func applyUserVoiceSettings(to utterance: AVSpeechUtterance) {
+            // A. 設定聲音 (Voice)
+            let savedVoiceId = UserDefaults.standard.string(forKey: "tts_voice_identifier") ?? ""
+            if !savedVoiceId.isEmpty, let voice = AVSpeechSynthesisVoice(identifier: savedVoiceId) {
+                utterance.voice = voice
+            } else {
+                // 預設 fallback
+                utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
+            }
+            
+            // B. 設定語速 (Rate)
+            // AVSpeechUtteranceDefaultSpeechRate 約為 0.5
+            let savedRate = UserDefaults.standard.float(forKey: "tts_speech_rate")
+            if savedRate > 0.0 {
+                utterance.rate = savedRate
+            } else {
+                utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+            }
+        }
     private func setupBindings() {
         // UDP 連線後自動抓取遊戲
         udpService.$serverIP
@@ -249,24 +278,25 @@ class MainViewModel: ObservableObject {
     // MARK: - TTS (Singleton Strategy)
         
         private func speak(_ text: String) async {
-            // 1. 如果正在說話，先停止 (直接用 self.synthesizer)
+            // 1. 如果正在說話，先停止
             if synthesizer.isSpeaking {
                 synthesizer.stopSpeaking(at: .immediate)
             }
             
-            // 2. 確保 Session 狀態 (切換到 MainActor 執行)
+            // 2. 確保 Session 狀態
             await MainActor.run {
                 prepareSessionForPlayback()
             }
             
             // 3. 建立發音內容
             let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
-            utterance.rate = AVSpeechUtteranceDefaultSpeechRate
             
-            print("🔊 [TTS] 播放: \(text.prefix(10))...")
+            // 🔥 [修改] 套用使用者設定的聲音與語速
+            applyUserVoiceSettings(to: utterance)
             
-            // 🔥 [關鍵] 直接使用常駐的 synthesizer 實體，不再 new 新的
+            print("🔊 [TTS] 播放 (Voice: \(utterance.voice?.name ?? "Default"), Rate: \(utterance.rate)): \(text.prefix(10))...")
+            
+            // 🔥 [關鍵] 直接使用常駐的 synthesizer 實體
             synthesizer.speak(utterance)
             
             // 4. 更新 UI
@@ -316,4 +346,16 @@ class MainViewModel: ObservableObject {
         let generator = UIImpactFeedbackGenerator(style: .light)
         generator.impactOccurred()
     }
+    func testVoiceSettings() {
+            Task {
+                // 隨機講一句話，讓使用者確認語速
+                let testPhrases = [
+                    "這是目前的語速，您覺得清楚嗎？",
+                    "1, 2, 3, 4, 測試中。",
+                    "調整語速可以幫助大家更容易聽懂規則喔！"
+                ]
+                let text = testPhrases.randomElement() ?? "語速測試"
+                await speak(text)
+            }
+        }
 }

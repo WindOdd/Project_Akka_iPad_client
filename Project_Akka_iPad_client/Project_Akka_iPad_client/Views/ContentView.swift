@@ -1,11 +1,13 @@
 import SwiftUI
-
+import AVFoundation // 👈 加入這一行，錯誤就會消失了！
 struct ContentView: View {
     @StateObject private var viewModel = MainViewModel()
     
     // IP 暫存
     @AppStorage("manual_server_ip") private var manualIP: String = "192.168.50.10"
-    
+    // 👇 [新增] 語音設定儲存 (自動綁定 UserDefaults)
+    @AppStorage("tts_speech_rate") private var speechRate: Double = 0.5
+    @AppStorage("tts_voice_identifier") private var voiceIdentifier: String = ""
     // 編輯中的 Table ID
     @State private var editingTableId: String = ""
     
@@ -16,30 +18,59 @@ struct ContentView: View {
     
     var body: some View {
         NavigationView {
-            VStack(spacing: 0) {
-                // MARK: - 1. 頂部狀態/設定區
-                topSettingsArea
-                
-                // MARK: - 2. 主要內容區 (遊戲列表 vs 聊天室)
-                ZStack {
-                    if viewModel.selectedGame == nil {
-                        // [流程 I] 尚未選擇遊戲：顯示遊戲列表
-                        gameSelectionList
-                    } else {
-                        // [流程 I] 已選擇遊戲：顯示聊天室
-                        chatInterface
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onTapGesture {
-                    isInputFocused = false
-                }
-                
-                Divider()
-                
-                // MARK: - 3. 底部操作區
-                bottomControlArea
-            }
+            // B. 語速調整 Slider (細緻版)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                Text("語速微調")
+                Spacer()
+                                            
+                // 顯示數值 (使用等寬字體避免數字跳動)
+                Text(String(format: "%.2f", speechRate))
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.blue)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.blue.opacity(0.1))
+                .cornerRadius(4)
+                                            
+                 // 復原預設值按鈕 (當不是 0.5 時才顯示)
+                 if speechRate != 0.5 {
+                    Button("重置") {
+                     withAnimation { speechRate = 0.5 }
+                     }
+                     .font(.caption2)
+                     .foregroundColor(.red)
+                      }
+                      }
+                                        
+                      HStack(spacing: 12) {
+                                            // 🐢 烏龜圖示 (慢)
+                                            Image(systemName: "tortoise.fill")
+                                                .font(.caption)
+                                                .foregroundColor(.gray)
+                                            
+                                            // 🔥 [關鍵修改] step 改為 0.01，讓滑動超滑順
+                                            Slider(value: $speechRate, in: 0.25...0.75, step: 0.01)
+                                                .accentColor(.blue)
+                                            
+                                            // 🐇 兔子圖示 (快)
+                                            Image(systemName: "hare.fill")
+                                                .font(.caption)
+                                                .foregroundColor(.gray)
+                                            
+                                            // 🔥 [新增] 試聽按鈕
+                                            Button(action: {
+                                                viewModel.testVoiceSettings()
+                                            }) {
+                                                Image(systemName: "play.circle.fill")
+                                                    .resizable()
+                                                    .frame(width: 30, height: 30)
+                                                    .foregroundColor(.green)
+                                                    .shadow(radius: 2)
+                                            }
+                                            .padding(.leading, 4)
+                                        }
+                        }
             .navigationTitle(isLocked ? "Project Akka" : "後台設定中...")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -127,7 +158,52 @@ struct ContentView: View {
                     }
                     
                     Divider()
-                    
+                    // 👇👇👇 [新增開始] 語音與語速設定區塊 👇👇👇
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            HStack {
+                                                Image(systemName: "waveform.circle.fill").foregroundColor(.blue)
+                                                Text("TTS 語音設定")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            
+                                            // A. 聲音選擇 Picker
+                                            HStack {
+                                                Text("聲音角色")
+                                                Spacer()
+                                                // 使用 Menu 樣式的 Picker 比較節省空間
+                                                Picker("選擇聲音", selection: $voiceIdentifier) {
+                                                    Text("系統預設").tag("") // 空字串代表預設
+                                                    ForEach(viewModel.availableVoices, id: \.identifier) { voice in
+                                                        // 顯示名稱 (如果有高品質則標註)
+                                                        Text("\(voice.name) \(voice.quality == .enhanced ? "(高品質)" : "")")
+                                                            .tag(voice.identifier)
+                                                    }
+                                                }
+                                                .pickerStyle(.menu)
+                                                .padding(.horizontal, 8)
+                                                .background(Color.gray.opacity(0.1))
+                                                .cornerRadius(8)
+                                            }
+                                            
+                                            // B. 語速調整 Slider
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                HStack {
+                                                    Text("語速")
+                                                    Spacer()
+                                                    Text(String(format: "%.2f", speechRate)) // 顯示數值
+                                                        .font(.caption)
+                                                        .foregroundColor(.gray)
+                                                }
+                                                // 範圍 0.25 (慢) ~ 0.75 (快), 預設 0.5
+                                                Slider(value: $speechRate, in: 0.25...0.75, step: 0.05)
+                                                    .accentColor(.blue)
+                                            }
+                                        }
+                                        .padding(.vertical, 4)
+                                        // 👆👆👆 [新增結束] 👆👆👆
+                                        
+                                        Divider()
                     // 🔥 [新功能] AI 模型選擇與管理 🔥
                     VStack(spacing: 8) {
                         HStack {
