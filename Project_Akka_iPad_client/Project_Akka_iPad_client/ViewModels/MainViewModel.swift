@@ -21,7 +21,8 @@ class MainViewModel: ObservableObject {
     @Published var sessionId = UUID().uuidString
     
     @Published var tableId: String = UserDefaults.standard.string(forKey: "saved_table_id") ?? "T01"
-    
+    // 👇 [新增 1] 加入錄音計時器變數
+    private var recordingTimer: Timer?
     private var fillerTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
     // ✅ [修正] 只保留一個 synthesizer 實例，避免衝突
@@ -128,7 +129,7 @@ class MainViewModel: ObservableObject {
     func handleMicButtonTap() {
             // 🔥 [修改] 不再需要解包 (?)
             if synthesizer.isSpeaking {
-                print("🛑 [測試] 強制中斷說話")
+                print("🛑 [User Action] 強制中斷 TTS")
                 synthesizer.stopSpeaking(at: .immediate)
             }
 
@@ -136,6 +137,7 @@ class MainViewModel: ObservableObject {
                 stopAndSend()
             } else {
                 isRecording = true
+                startRecordingTimer()
                 Task {
                     await sttService.startRecording()
                 }
@@ -145,6 +147,8 @@ class MainViewModel: ObservableObject {
     // MainViewModel.swift
 
     private func stopAndSend() {
+            recordingTimer?.invalidate()
+            recordingTimer = nil
             isRecording = false
             // 啟動思考動畫 (這會觸發 2.5s 後的 filler sound)
             self.isThinking = true
@@ -217,7 +221,30 @@ class MainViewModel: ObservableObject {
             }
         }
     
-    // MARK: - TTS 安全播放 (🔥 徹底解決 -66748 Crash)
+    // 👇 [新增 4] 實作 Timeout 邏輯與震動
+        private func startRecordingTimer() {
+            recordingTimer?.invalidate() // 防禦性清除
+            
+            // 設定 60 秒後觸發
+            recordingTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: false) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.handleRecordingTimeout()
+                }
+            }
+        }
+    private func handleRecordingTimeout() {
+            guard isRecording else { return } // 確保還在錄音中
+            
+            print("⏰ 錄音超時 (60s)，強制送出")
+            self.statusMessage = "錄音超時，自動送出..."
+            
+            // 📳 觸發長震動提示 (Warning 類型震動比較明顯)
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.warning)
+            
+            // 執行送出流程
+            stopAndSend()
+        }
     
     // MARK: - TTS (Singleton Strategy)
         

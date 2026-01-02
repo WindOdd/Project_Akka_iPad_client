@@ -323,30 +323,39 @@ struct ContentView: View {
             .padding(.top, 8)
             
             // 🔥 [關鍵邏輯] 麥克風按鈕鎖定判斷
-            // 鎖定條件：沒選遊戲 OR 思考中 OR 模型正在下載
-            /*let isInputBlocked = viewModel.selectedGame == nil ||
-                                 viewModel.isThinking ||
-                                 viewModel.sttService.isModelLoading*/
-            let isInputBlocked = false // 👈 改成這樣，讓按鈕永遠變成紅色/藍色可按狀態
+            // 🔥 [修改] 按鈕鎖定邏輯
+                        // A. 錄音階段 (isRecording) -> 不鎖定 (要能按停止)
+                        // B. 思考階段 (isThinking)  -> 鎖定 (防止重複送出)
+                        // C. 說話階段 (TTS)        -> 不鎖定 (要能按打斷)
+                        // D. 模型載入中             -> 鎖定 (防止錯誤)
+                        
+            let isInputBlocked = viewModel.isThinking || viewModel.sttService.isModelLoading
             Button(action: {
                 viewModel.handleMicButtonTap()
             }) {
                 ZStack {
+                     // 外圈顏色與狀態：若鎖定則變灰且半透明
                     Circle()
-                        .fill(isInputBlocked ? Color.gray.opacity(0.3) : (viewModel.isRecording ? Color.red : Color.blue))
-                        .frame(width: 70, height: 70)
-                        .shadow(radius: isInputBlocked ? 0 : 5)
-                    
+                    .fill(
+                    isInputBlocked ? Color.gray.opacity(0.3) :
+                    (viewModel.isRecording ? Color.red : Color.blue)
+                    )
+                    .frame(width: 70, height: 70)
+                    // 鎖定時移除陰影，增加「不能按」的視覺感
+                    .shadow(radius: isInputBlocked ? 0 : 5)
                     if viewModel.sttService.isModelLoading {
-                        ProgressView() // 載入中顯示轉圈
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                            .scaleEffect(1.2)
+                    ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    .scaleEffect(1.2)
                     } else {
-                        Image(systemName: viewModel.isRecording ? "stop.fill" : "mic.fill")
-                            .font(.title)
-                            .foregroundColor(.white)
-                    }
-                }
+                    // 圖示邏輯
+                    Image(systemName: viewModel.isRecording ? "stop.fill" : "mic.fill")
+                    .font(.title)
+                    .foregroundColor(.white)
+                    // 若被鎖定，圖示也可以稍微變暗
+                    .opacity(isInputBlocked ? 0.5 : 1.0)
+                 }
+              }
             }
             .padding(.bottom, 10)
             .padding(.top, 4)
