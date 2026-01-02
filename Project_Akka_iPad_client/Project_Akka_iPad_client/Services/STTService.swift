@@ -5,9 +5,8 @@ import Combine
 
 // MARK: - 模型定義
 enum WhisperModel: String, CaseIterable, Identifiable {
-    case distilLargeV3 = "distil-large-v3"
-    case largeV3 = "large-v3"
-    case medium = "medium"
+    case openaiLargeV3Turbo = "openai_whisper-large-v3-v20240930_turbo_632MB"
+    case largeV3Turbo600MB = "distil-whisper_distil-large-v3_turbo_600MB"
     case base = "base"
     case small = "small"
     
@@ -15,9 +14,8 @@ enum WhisperModel: String, CaseIterable, Identifiable {
     
     var displayName: String {
         switch self {
-        case .distilLargeV3: return "Distil Large V3 (推薦)"
-        case .largeV3: return "Large V3 (精準/慢)"
-        case .medium: return "Medium (平衡)"
+        case .largeV3Turbo600MB: return "Large V3 Turbo (600MB 👑推薦)"
+        case .openaiLargeV3Turbo: return "Large V3 Turbo (632MB)"
         case .base: return "Base (快速)"
         case .small: return "Small (極速)"
         }
@@ -35,7 +33,7 @@ class STTService: ObservableObject {
            let model = WhisperModel(rawValue: saved) {
             return model
         }
-        return .distilLargeV3
+        return .largeV3Turbo600MB
     }()
     
     // MARK: - Internal Properties
@@ -47,30 +45,43 @@ class STTService: ObservableObject {
     // MARK: - 模型生命週期管理
     
     func setupWhisper(keywords: [String]) async {
-        self.currentKeywords = keywords
-        
-        // 🔥 [新增] 預先啟動 Always-On Session，確保 App 一開始就佔用音訊通道
-        //await configureAlwaysOnSession()
-        if pipe != nil {
-            print("✅ 模型實體已存在，僅更新關鍵字")
-            return
+            self.currentKeywords = keywords
+            
+            if pipe != nil {
+                print("✅ 模型實體已存在，僅更新關鍵字")
+                return
+            }
+            
+            self.isModelLoading = true
+            self.statusMessage = "下載模型: \(currentModel.displayName)..."
+            
+            do {
+                print("🚀 開始載入模型: \(currentModel.rawValue)")
+                pipe = try await WhisperKit(model: currentModel.rawValue, download: true)
+                
+                // 🔥 [新增] 自動熱身 (Warmup)
+                // 在使用者還沒開始說話前，先強制執行一次空辨識，觸發 ANE 編譯
+                self.statusMessage = "正在為 A16 晶片最佳化 (熱身中)..."
+                print("🔥 開始模型熱身 (Warmup)...")
+                
+                // 建立一個極短的靜音音訊進行熱身
+                // 這裡我們簡單地讓它 transcribe 一個空路徑或是極短的 dummy 檔案，
+                // 但最簡單的方法是讓它跑一次空的 decode (如果 WhisperKit 支援)
+                // 或是直接告訴使用者「準備完成」但心裡知道第一次會慢。
+                //
+                // 比較正規的做法是：
+                try? await pipe?.transcribe(audioArray: [Float](repeating: 0, count: 16000)) // 1秒靜音
+                
+                self.isModelLoading = false
+                self.statusMessage = "阿卡就緒"
+                print("✅ 模型載入與熱身完成")
+                
+            } catch {
+                self.statusMessage = "載入失敗: \(error.localizedDescription)"
+                print("❌ Whisper load error: \(error)")
+                self.isModelLoading = false
+            }
         }
-        
-        self.isModelLoading = true
-        self.statusMessage = "下載模型: \(currentModel.rawValue)..."
-        
-        do {
-            print("🚀 開始載入模型: \(currentModel.rawValue)")
-            pipe = try await WhisperKit(model: currentModel.rawValue, download: true)
-            self.isModelLoading = false
-            self.statusMessage = "阿卡就緒 (\(currentModel.rawValue))"
-            print("✅ 模型載入完成")
-        } catch {
-            self.statusMessage = "載入失敗: \(error.localizedDescription)"
-            print("❌ Whisper load error: \(error)")
-            self.isModelLoading = false
-        }
-    }
     
     func switchModel(to newModel: WhisperModel) {
         if newModel == currentModel && pipe != nil { return }
@@ -87,8 +98,6 @@ class STTService: ObservableObject {
     }
     
     // MARK: - Audio Session Management (錄音專用)
-    
-    // MARK: - Audio Session Management (核心修改區)
         
         /// 🔥 [修改] 配置常駐型 Session
         /// 策略：設定為 PlayAndRecord + DefaultToSpeaker，同時滿足錄音與 TTS 擴音需求
@@ -160,43 +169,59 @@ class STTService: ObservableObject {
     }
     
     func stopAndTranscribe() async -> String? {
-        // 1. 停止錄音
-        audioRecorder?.stop()
-        
-        // 🔥🔥 [關鍵修正 1] 徹底銷毀 Recorder
-        // 這是為了解除 AVAudioRecorder 對 AudioEngine 16kHz 的硬體佔用
-        audioRecorder = nil
-        print("⏹️ 錄音機實例已銷毀")
-        
-        guard let pipe = pipe, let url = audioFilename else { return nil }
-        
-        // 檔案檢查 (防崩潰)
-        do {
-            if !FileManager.default.fileExists(atPath: url.path) {
-                print("⚠️ [STT] 錄音檔不存在")
+            // 1. 停止錄音
+            audioRecorder?.stop()
+            audioRecorder = nil // 釋放資源
+            print("⏹️ 錄音機實例已銷毀")
+            
+            guard let pipe = pipe, let url = audioFilename else { return nil }
+            
+            // 檔案檢查
+            do {
+                if !FileManager.default.fileExists(atPath: url.path) { return nil }
+                let attr = try FileManager.default.attributesOfItem(atPath: url.path)
+                if (attr[.size] as? UInt64 ?? 0) < 4096 { return nil }
+            } catch { return nil }
+            
+            // 2. 準備提示詞 (Prompt)
+            let promptText = "繁體中文桌遊對話。請使用繁體中文回答。關鍵詞：\(currentKeywords.joined(separator: ", "))"
+            
+            // 🔥 [修正] 手動將文字轉為 Token
+            // WhisperKit 不接受 String 類型的 prompt，必須手動 Tokenize
+            var promptTokens: [Int] = []
+            if let tokenizer = pipe.tokenizer {
+                // 過濾掉特殊字元，只保留文字 Token
+                promptTokens = tokenizer.encode(text: promptText)
+                    .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+            }
+            
+            // 3. 設定解碼選項
+            // language: 強制設定為中文 "zh"
+            // temperature: 0.0 代表最精準，不做隨機聯想
+            // promptTokens: 這是我們剛轉好的 Token 陣列
+            let options = DecodingOptions(
+                language: "zh",
+                temperature: 0.0,
+                promptTokens: promptTokens // 👈 這裡原本寫 prompt: promptText 會報錯，改用這個
+            )
+            
+            print("📝 開始辨識 (Prompt: \(promptText.prefix(10))...)")
+            
+            do {
+                let result = try await pipe.transcribe(audioPath: url.path, decodeOptions: options)
+                let text = result.first?.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                
+                print("📝 [Whisper 辨識結果]: \(text ?? "nil")")
+                
+                // 過濾幻覺
+                if let t = text, (t.isEmpty || t == "you" || t.lowercased().contains("thank you")) {
+                     return nil
+                }
+                
+                return (text?.isEmpty ?? true) ? nil : text
+            } catch {
+                print("❌ 辨識失敗: \(error)")
                 return nil
             }
-            let attr = try FileManager.default.attributesOfItem(atPath: url.path)
-            let fileSize = attr[.size] as? UInt64 ?? 0
-            if fileSize < 4096 {
-                print("⚠️ [STT] 錄音檔太短 (\(fileSize) bytes)，跳過辨識")
-                return nil
-            }
-        } catch {
-            print("⚠️ [STT] 檔案檢查失敗: \(error)")
-            return nil
         }
-        
-        // 3. 執行辨識
-        let _ = "繁體中文桌遊對話。關鍵詞：\(currentKeywords.joined(separator: ", "))"
-        // 若 WhisperKit 版本支援 initialPrompt，可加入 promptText
-        let options = DecodingOptions(language: "zh")
-        
-        let result = try? await pipe.transcribe(audioPath: url.path, decodeOptions: options)
-        let text = result?.first?.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        
-        print("📝 [Whisper 辨識結果]: \(text ?? "nil (無聲)")")
-        
-        return (text?.isEmpty ?? true) ? nil : text
-    }
 }

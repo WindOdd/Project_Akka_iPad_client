@@ -350,9 +350,7 @@ class MainViewModel: ObservableObject {
             Task {
                 // 隨機講一句話，讓使用者確認語速
                 let testPhrases = [
-                    "這是目前的語速，您覺得清楚嗎？",
-                    "1, 2, 3, 4, 測試中。",
-                    "調整語速可以幫助大家更容易聽懂規則喔！"
+                    "你好，這是目前的語速"
                 ]
                 let text = testPhrases.randomElement() ?? "語速測試"
                 await speak(text)

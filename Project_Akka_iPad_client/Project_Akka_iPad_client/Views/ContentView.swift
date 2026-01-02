@@ -1,13 +1,16 @@
 import SwiftUI
-import AVFoundation // 👈 加入這一行，錯誤就會消失了！
+import AVFoundation // ✅ 必須加入這行
+
 struct ContentView: View {
     @StateObject private var viewModel = MainViewModel()
     
     // IP 暫存
     @AppStorage("manual_server_ip") private var manualIP: String = "192.168.50.10"
-    // 👇 [新增] 語音設定儲存 (自動綁定 UserDefaults)
+    
+    // 👇 語音設定儲存
     @AppStorage("tts_speech_rate") private var speechRate: Double = 0.5
     @AppStorage("tts_voice_identifier") private var voiceIdentifier: String = ""
+    
     // 編輯中的 Table ID
     @State private var editingTableId: String = ""
     
@@ -16,61 +19,31 @@ struct ContentView: View {
     
     @FocusState private var isInputFocused: Bool
     
+    // MARK: - 主畫面結構 (這裡是您原本遺失的部分)
     var body: some View {
         NavigationView {
-            // B. 語速調整 Slider (細緻版)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                Text("語速微調")
-                Spacer()
-                                            
-                // 顯示數值 (使用等寬字體避免數字跳動)
-                Text(String(format: "%.2f", speechRate))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundColor(.blue)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.blue.opacity(0.1))
-                .cornerRadius(4)
-                                            
-                 // 復原預設值按鈕 (當不是 0.5 時才顯示)
-                 if speechRate != 0.5 {
-                    Button("重置") {
-                     withAnimation { speechRate = 0.5 }
-                     }
-                     .font(.caption2)
-                     .foregroundColor(.red)
-                      }
-                      }
-                                        
-                      HStack(spacing: 12) {
-                                            // 🐢 烏龜圖示 (慢)
-                                            Image(systemName: "tortoise.fill")
-                                                .font(.caption)
-                                                .foregroundColor(.gray)
-                                            
-                                            // 🔥 [關鍵修改] step 改為 0.01，讓滑動超滑順
-                                            Slider(value: $speechRate, in: 0.25...0.75, step: 0.01)
-                                                .accentColor(.blue)
-                                            
-                                            // 🐇 兔子圖示 (快)
-                                            Image(systemName: "hare.fill")
-                                                .font(.caption)
-                                                .foregroundColor(.gray)
-                                            
-                                            // 🔥 [新增] 試聽按鈕
-                                            Button(action: {
-                                                viewModel.testVoiceSettings()
-                                            }) {
-                                                Image(systemName: "play.circle.fill")
-                                                    .resizable()
-                                                    .frame(width: 30, height: 30)
-                                                    .foregroundColor(.green)
-                                                    .shadow(radius: 2)
-                                            }
-                                            .padding(.leading, 4)
-                                        }
-                        }
+            VStack(spacing: 0) {
+                // 1. 頂部狀態/設定區
+                topSettingsArea
+                
+                // 2. 主要內容區 (遊戲列表 vs 聊天室)
+                ZStack {
+                    if viewModel.selectedGame == nil {
+                        gameSelectionList
+                    } else {
+                        chatInterface
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onTapGesture {
+                    isInputFocused = false
+                }
+                
+                Divider()
+                
+                // 3. 底部操作區
+                bottomControlArea
+            }
             .navigationTitle(isLocked ? "Project Akka" : "後台設定中...")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -119,7 +92,7 @@ struct ContentView: View {
                 }
                 .padding(.horizontal)
             } else {
-                // 🔓 管理員設定模式：完整設定 + 模型管理
+                // 🔓 管理員設定模式
                 VStack(spacing: 12) {
                     Text("🔧 管理員設定模式")
                         .font(.caption)
@@ -158,53 +131,61 @@ struct ContentView: View {
                     }
                     
                     Divider()
-                    // 👇👇👇 [新增開始] 語音與語速設定區塊 👇👇👇
-                                        VStack(alignment: .leading, spacing: 8) {
-                                            HStack {
-                                                Image(systemName: "waveform.circle.fill").foregroundColor(.blue)
-                                                Text("TTS 語音設定")
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                            }
-                                            
-                                            // A. 聲音選擇 Picker
-                                            HStack {
-                                                Text("聲音角色")
-                                                Spacer()
-                                                // 使用 Menu 樣式的 Picker 比較節省空間
-                                                Picker("選擇聲音", selection: $voiceIdentifier) {
-                                                    Text("系統預設").tag("") // 空字串代表預設
-                                                    ForEach(viewModel.availableVoices, id: \.identifier) { voice in
-                                                        // 顯示名稱 (如果有高品質則標註)
-                                                        Text("\(voice.name) \(voice.quality == .enhanced ? "(高品質)" : "")")
-                                                            .tag(voice.identifier)
-                                                    }
-                                                }
-                                                .pickerStyle(.menu)
-                                                .padding(.horizontal, 8)
-                                                .background(Color.gray.opacity(0.1))
-                                                .cornerRadius(8)
-                                            }
-                                            
-                                            // B. 語速調整 Slider
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                HStack {
-                                                    Text("語速")
-                                                    Spacer()
-                                                    Text(String(format: "%.2f", speechRate)) // 顯示數值
-                                                        .font(.caption)
-                                                        .foregroundColor(.gray)
-                                                }
-                                                // 範圍 0.25 (慢) ~ 0.75 (快), 預設 0.5
-                                                Slider(value: $speechRate, in: 0.25...0.75, step: 0.05)
-                                                    .accentColor(.blue)
-                                            }
-                                        }
-                                        .padding(.vertical, 4)
-                                        // 👆👆👆 [新增結束] 👆👆👆
-                                        
-                                        Divider()
-                    // 🔥 [新功能] AI 模型選擇與管理 🔥
+                    
+                    // 👇👇👇 [修正] 語音設定區塊 (這才是它該在的位置) 👇👇👇
+                    VStack(spacing: 10) {
+                        // 第一行：標題 + 聲音選擇 (整合在一行)
+                        HStack {
+                            Image(systemName: "waveform.circle.fill").foregroundColor(.blue)
+                            Text("TTS 設定").font(.caption).bold().foregroundColor(.secondary)
+                            
+                            Spacer()
+                            
+                            // 聲音選擇器
+                            Picker("選擇聲音", selection: $voiceIdentifier) {
+                                Text("系統預設").tag("")
+                                ForEach(viewModel.availableVoices, id: \.identifier) { voice in
+                                    Text("\(voice.name)").tag(voice.identifier)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .scaleEffect(0.9)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(6)
+                        }
+                        
+                        // 第二行：語速滑桿 + 數值 + 試聽 (整合在一行)
+                        HStack(spacing: 8) {
+                            Text("語速").font(.caption).foregroundColor(.gray)
+                            
+                            Image(systemName: "tortoise.fill").font(.caption2).foregroundColor(.gray)
+                            
+                            // 🔥 Slider 間距設為 0.01 (精細微調)
+                            Slider(value: $speechRate, in: 0.25...0.75, step: 0.01)
+                            
+                            Image(systemName: "hare.fill").font(.caption2).foregroundColor(.gray)
+                            
+                            // 數值顯示
+                            Text(String(format: "%.2f", speechRate))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundColor(.blue)
+                                .frame(width: 35)
+                            
+                            // 試聽按鈕
+                            Button(action: { viewModel.testVoiceSettings() }) {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.title2)
+                                    .foregroundColor(.green)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    // 👆👆👆 [修正結束] 👆👆👆
+                    
+                    Divider()
+                    
+                    // AI 模型設定
                     VStack(spacing: 8) {
                         HStack {
                             Image(systemName: "cpu.fill").foregroundColor(.purple)
@@ -213,7 +194,6 @@ struct ContentView: View {
                                 .foregroundColor(.secondary)
                             Spacer()
                             
-                            // 顯示載入狀態
                             if viewModel.sttService.isModelLoading {
                                 ProgressView()
                                     .scaleEffect(0.7)
@@ -222,7 +202,6 @@ struct ContentView: View {
                                     .foregroundColor(.orange)
                             }
                             
-                            // 強制重載按鈕
                             Button(action: {
                                 viewModel.reloadModel()
                             }) {
@@ -232,7 +211,6 @@ struct ContentView: View {
                             .disabled(viewModel.sttService.isModelLoading)
                         }
                         
-                        // 模型選擇器
                         Picker("選擇模型", selection: Binding(
                             get: { viewModel.sttService.currentModel },
                             set: { newModel in
@@ -263,7 +241,7 @@ struct ContentView: View {
         .shadow(color: Color.black.opacity(0.05), radius: 5, x: 0, y: 5)
     }
     
-    // 2. 遊戲選擇列表 (套用自定義按鈕樣式)
+    // 2. 遊戲選擇列表
     private var gameSelectionList: some View {
         Group {
             if viewModel.supportedGames.isEmpty {
@@ -272,8 +250,7 @@ struct ContentView: View {
                         Text("目前沒有可用的遊戲")
                             .foregroundColor(.gray)
                     } else {
-                        ProgressView()
-                            .scaleEffect(1.5)
+                        ProgressView().scaleEffect(1.5)
                         Text("正在搜尋遊戲主機...")
                             .foregroundColor(.gray)
                             .padding(.top, 10)
@@ -305,7 +282,7 @@ struct ContentView: View {
                                     .foregroundColor(.blue.opacity(0.8))
                             }
                         }
-                        .buttonStyle(GameCardButtonStyle()) // 套用點擊範圍修正
+                        .buttonStyle(GameCardButtonStyle())
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -347,11 +324,11 @@ struct ContentView: View {
         }
     }
     
-    // 4. 底部操作區 (包含按鈕鎖定邏輯)
+    // 4. 底部操作區
     private var bottomControlArea: some View {
         let isInputBlocked = viewModel.isThinking || viewModel.sttService.isModelLoading
+        
         return VStack {
-            // 狀態文字
             if !viewModel.statusMessage.isEmpty && viewModel.selectedGame != nil {
                 Text(viewModel.statusMessage)
                     .font(.caption)
@@ -360,7 +337,6 @@ struct ContentView: View {
             }
             
             HStack {
-                // 遊戲名稱顯示
                 if let game = viewModel.selectedGame {
                     VStack(alignment: .leading) {
                         Text("正在遊玩：")
@@ -378,7 +354,6 @@ struct ContentView: View {
                 
                 Spacer()
                 
-                // 離開按鈕
                 if viewModel.selectedGame != nil {
                     Button(action: {
                         viewModel.exitGame()
@@ -399,46 +374,34 @@ struct ContentView: View {
             .padding(.horizontal)
             .padding(.top, 8)
             
-            // 🔥 [關鍵邏輯] 麥克風按鈕鎖定判斷
-            // 🔥 [修改] 按鈕鎖定邏輯
-                        // A. 錄音階段 (isRecording) -> 不鎖定 (要能按停止)
-                        // B. 思考階段 (isThinking)  -> 鎖定 (防止重複送出)
-                        // C. 說話階段 (TTS)        -> 不鎖定 (要能按打斷)
-                        // D. 模型載入中             -> 鎖定 (防止錯誤)
-                        
-
             Button(action: {
                 viewModel.handleMicButtonTap()
             }) {
                 ZStack {
-                     // 外圈顏色與狀態：若鎖定則變灰且半透明
                     Circle()
-                    .fill(
-                    isInputBlocked ? Color.gray.opacity(0.3) :
-                    (viewModel.isRecording ? Color.red : Color.blue)
-                    )
-                    .frame(width: 70, height: 70)
-                    // 鎖定時移除陰影，增加「不能按」的視覺感
-                    .shadow(radius: isInputBlocked ? 0 : 5)
+                        .fill(
+                            isInputBlocked ? Color.gray.opacity(0.3) :
+                            (viewModel.isRecording ? Color.red : Color.blue)
+                        )
+                        .frame(width: 70, height: 70)
+                        .shadow(radius: isInputBlocked ? 0 : 5)
+                    
                     if viewModel.sttService.isModelLoading {
-                    ProgressView()
-                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                    .scaleEffect(1.2)
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(1.2)
                     } else {
-                    // 圖示邏輯
-                    Image(systemName: viewModel.isRecording ? "stop.fill" : "mic.fill")
-                    .font(.title)
-                    .foregroundColor(.white)
-                    // 若被鎖定，圖示也可以稍微變暗
-                    .opacity(isInputBlocked ? 0.5 : 1.0)
-                 }
-              }
+                        Image(systemName: viewModel.isRecording ? "stop.fill" : "mic.fill")
+                            .font(.title)
+                            .foregroundColor(.white)
+                            .opacity(isInputBlocked ? 0.5 : 1.0)
+                    }
+                }
             }
             .padding(.bottom, 10)
             .padding(.top, 4)
-            .disabled(isInputBlocked) // 禁止點擊
+            .disabled(isInputBlocked)
             
-            // Debug Info
             if !isLocked {
                 HStack(spacing: 20) {
                     Text("🛠 IP: \(viewModel.udpService.serverIP ?? "未連線")")
@@ -454,14 +417,12 @@ struct ContentView: View {
     }
 }
 
-// MARK: - 自定義元件
-// 請放在檔案最下方
 struct GameCardButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 12)
-            .contentShape(Rectangle()) // 讓空白處也能點擊
+            .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(configuration.isPressed ? Color.white.opacity(0.15) : Color.clear)
@@ -469,5 +430,4 @@ struct GameCardButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
             .animation(.easeOut(duration: 0.2), value: configuration.isPressed)
     }
-    
 }
