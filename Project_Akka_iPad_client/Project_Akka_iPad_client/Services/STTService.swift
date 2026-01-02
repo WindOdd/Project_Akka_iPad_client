@@ -49,6 +49,8 @@ class STTService: ObservableObject {
     func setupWhisper(keywords: [String]) async {
         self.currentKeywords = keywords
         
+        // 🔥 [新增] 預先啟動 Always-On Session，確保 App 一開始就佔用音訊通道
+        await configureAlwaysOnSession()
         if pipe != nil {
             print("✅ 模型實體已存在，僅更新關鍵字")
             return
@@ -86,33 +88,29 @@ class STTService: ObservableObject {
     
     // MARK: - Audio Session Management (錄音專用)
     
-    /// 🔧 [修正] 改為 async 以避免 unsafeForcedSync 警告
-    nonisolated func activateRecordingSession() async {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            // 錄音時：必須使用 PlayAndRecord，且系統通常會鎖定在 16kHz (視硬體而定)
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-            // 給硬體一點時間穩定
-            try await Task.sleep(nanoseconds: 100_000_000) // 0.1s
-            print("🎙️ [Audio] Session 設為錄音模式 (Recording Ready)")
-        } catch {
-            print("❌ [Audio] 錄音 Session 啟動失敗: \(error)")
+    // MARK: - Audio Session Management (核心修改區)
+        
+        /// 🔥 [修改] 配置常駐型 Session
+        /// 策略：設定為 PlayAndRecord + DefaultToSpeaker，同時滿足錄音與 TTS 擴音需求
+        nonisolated func configureAlwaysOnSession() async {
+            do {
+                let session = AVAudioSession.sharedInstance()
+                // 關鍵：DefaultToSpeaker 確保 TTS 不會從聽筒出來
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+                try session.setActive(true, options: .notifyOthersOnDeactivation)
+                print("✅ [Audio] Session 設定為 Always-On PlayAndRecord")
+            } catch {
+                print("❌ [Audio] Session 設定失敗: \(error)")
+            }
         }
-    }
 
-    /// 🔧 [修正] 改為 async 以避免 unsafeForcedSync 警告
-    nonisolated func deactivateSession() async {
-        do {
-            // 🔥 強制關閉，讓系統硬體時鐘有機會重置
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            // 給硬體時間釋放資源
-            try await Task.sleep(nanoseconds: 100_000_000) // 0.1s
-            print("🔴 [Audio] Session 已徹底關閉 (Released)")
-        } catch {
-            print("⚠️ Session 關閉失敗: \(error)")
+        /// 🔥 [修改] 停用功能改為空實作
+        /// 策略：永遠不關閉 Session，避免硬體重啟導致的 Crash
+        nonisolated func deactivateSession() async {
+            // No-op: 保持 Session 開啟
+            print("🛡️ [Audio] 忽略停用請求 (Always-On Strategy)")
         }
-    }
+    
     
     // MARK: - Recording Logic
     
@@ -121,7 +119,7 @@ class STTService: ObservableObject {
         
         // 🔧 [修正] 直接在背景執行 async 函數，不再使用 detached task 以避免 actor isolation 問題
         // 1. 啟動 Session (async)
-        await activateRecordingSession()
+        await configureAlwaysOnSession()
         
         let recorder = await Task.detached(priority: .userInitiated) { () -> AVAudioRecorder? in
             let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("input.wav")
@@ -168,13 +166,6 @@ class STTService: ObservableObject {
         audioRecorder = nil
         print("⏹️ 錄音機實例已銷毀")
         
-        // 🔧 [修正] 直接呼叫 async deactivateSession，不再使用 detached task 避免 self capture 問題
-        /*await deactivateSession()
-        // 在背景快速釋放 Session
-            await Task.detached {
-                await self.deactivateSession()
-            }.value
-         */
         guard let pipe = pipe, let url = audioFilename else { return nil }
         
         // 檔案檢查 (防崩潰)

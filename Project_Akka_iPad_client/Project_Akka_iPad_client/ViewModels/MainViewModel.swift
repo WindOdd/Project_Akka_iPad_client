@@ -146,41 +146,72 @@ class MainViewModel: ObservableObject {
 
     private func stopAndSend() {
             isRecording = false
-            // isThinking = true // 🧪 [測試] 註解掉這行，避免它觸發任何 UI loading 遮罩
+            // 啟動思考動畫 (這會觸發 2.5s 後的 filler sound)
+            self.isThinking = true
+            self.startLatencyMasking()
             
             Task {
                 // 1. 取得 STT 文字
                 guard let userText = await sttService.stopAndTranscribe(), !userText.isEmpty else {
-                    DispatchQueue.main.async { self.statusMessage = "聽不清楚" }
+                    DispatchQueue.main.async {
+                        self.isThinking = false
+                        self.stopLatencyMasking()
+                        self.statusMessage = "聽不清楚，請再試一次"
+                    }
                     return
                 }
                 
-                // 更新 UI (顯示使用者說的話)
+                // 更新 UI (User)
+                let userMsg = ChatMessage(role: "user", content: userText, intent: "")
                 DispatchQueue.main.async {
-                    self.chatHistory.append(ChatMessage(role: "user", content: userText, intent: ""))
+                    self.chatHistory.append(userMsg)
                 }
                 
-                // 🔥🔥🔥 [請務必補上這行] 強制等待 0.6 秒 🔥🔥🔥
-                // 這是讓 iOS 音訊服務（audiod）有時間重啟的關鍵，沒有它就會崩潰！
-                try? await Task.sleep(nanoseconds: 600_000_000)
-                
-                // --- ✂️ 測試修改：跳過 API，直接復讀 ✂️ ---
-                
-                let echoText = "測試復讀：\(userText)"
-                
-                // 更新 UI (顯示助手回應)
-                DispatchQueue.main.async {
-                    self.chatHistory.append(ChatMessage(role: "assistant", content: echoText, intent: "test"))
-                    self.statusMessage = "播放中..."
+                // 2. 準備 API Request
+                // 確保有選中遊戲與 IP
+                guard let game = selectedGame, let ip = udpService.serverIP else {
+                    DispatchQueue.main.async {
+                        self.statusMessage = "連線錯誤：無 IP 或未選擇遊戲"
+                        self.isThinking = false
+                    }
+                    return
                 }
                 
-                // 2. 直接執行 TTS 播放
-                await speak(echoText)
+                let request = ChatRequest(
+                    table_id: self.tableId,
+                    session_id: self.sessionId,
+                    game_context: GameContext(game_name: game.id),
+                    user_input: userText,
+                    history: self.chatHistory // 包含剛加入的 userMsg
+                )
                 
-                // 3. 播放後重置狀態
-                DispatchQueue.main.async {
-                    self.isThinking = false
-                    self.statusMessage = "測試完成，可再次錄音"
+                // 3. 呼叫 API
+                do {
+                    let response = try await apiService.sendChat(ip: ip, request: request)
+                    
+                    // 收到回應，停止 Masking
+                    self.stopLatencyMasking()
+                    
+                    DispatchQueue.main.async {
+                        self.isThinking = false
+                        // 更新 UI (Assistant)
+                        let aiMsg = ChatMessage(role: "assistant", content: response.response, intent: response.intent)
+                        self.chatHistory.append(aiMsg)
+                        self.statusMessage = "阿卡說話中..."
+                    }
+                    
+                    // 4. 播放 TTS (直接播放 API 回傳的文字)
+                    await speak(response.response)
+                    
+                } catch {
+                    print("API Error: \(error)")
+                    self.stopLatencyMasking()
+                    DispatchQueue.main.async {
+                        self.isThinking = false
+                        self.statusMessage = "連線逾時或錯誤"
+                        // 錯誤時也可以唸出來 (選擇性)
+                        Task { await self.speak("抱歉，連線好像有點問題，請再試一次。") }
+                    }
                 }
             }
         }
@@ -224,33 +255,18 @@ class MainViewModel: ObservableObject {
 
     
     // 🔥 [核心] nonisolated: 脫離 MainActor，在背景執行
-    // 🔥 [核心修正] 修改 prepareSessionForPlayback
-    nonisolated private func prepareSessionForPlayback() async {
-        let session = AVAudioSession.sharedInstance()
-        do {
-            // 策略變更：不要先 setActive(false)，嘗試直接切換模式
-            // 這通常比「關掉再開」更順暢，不會觸發 4099 錯誤
-            
-            // 1. 直接設定為播放模式
-            // .interruptSpokenAudioAndMixWithOthers 能確保我們拿到主導權
-            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers, .interruptSpokenAudioAndMixWithOthers])
-            
-            // 2. 確保 Session 是活的
-            try session.setActive(true)
-            
-            // 3. 給予短暫的硬體鎖定時間
-            try await Task.sleep(nanoseconds: 200_000_000) // 0.2s
-            
-            print("🟢 [Audio] 無縫切換至 Playback Session 完成")
-        } catch {
-            print("⚠️ [Audio] 切換失敗，嘗試強制重置: \(error)")
-            // 備案：如果直接切換失敗，才執行「關掉再開」的舊邏輯
-            try? session.setActive(false)
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            try? session.setCategory(.playback, mode: .spokenAudio)
-            try? session.setActive(true)
+    /// 🔥 [修改] 不再切換 Category，只確保 Active 與正確的路由
+        nonisolated private func prepareSessionForPlayback() async {
+            let session = AVAudioSession.sharedInstance()
+            do {
+                // 再次確認它是 PlayAndRecord (防止被其他 App 改掉)
+                // 並且再次確保 defaultToSpeaker，以免聲音從聽筒出來
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+                try session.setActive(true)
+            } catch {
+                print("⚠️ [Audio] Session 檢查失敗: \(error)")
+            }
         }
-    }
     
     // MARK: - 思考模擬動畫
     
