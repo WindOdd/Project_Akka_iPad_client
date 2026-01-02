@@ -50,7 +50,7 @@ class STTService: ObservableObject {
         self.currentKeywords = keywords
         
         // 🔥 [新增] 預先啟動 Always-On Session，確保 App 一開始就佔用音訊通道
-        await configureAlwaysOnSession()
+        //await configureAlwaysOnSession()
         if pipe != nil {
             print("✅ 模型實體已存在，僅更新關鍵字")
             return
@@ -92,10 +92,9 @@ class STTService: ObservableObject {
         
         /// 🔥 [修改] 配置常駐型 Session
         /// 策略：設定為 PlayAndRecord + DefaultToSpeaker，同時滿足錄音與 TTS 擴音需求
-        nonisolated func configureAlwaysOnSession() async {
+        func configureAlwaysOnSession() {
             do {
                 let session = AVAudioSession.sharedInstance()
-                // 關鍵：DefaultToSpeaker 確保 TTS 不會從聽筒出來
                 try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
                 try session.setActive(true, options: .notifyOthersOnDeactivation)
                 print("✅ [Audio] Session 設定為 Always-On PlayAndRecord")
@@ -106,7 +105,7 @@ class STTService: ObservableObject {
 
         /// 🔥 [修改] 停用功能改為空實作
         /// 策略：永遠不關閉 Session，避免硬體重啟導致的 Crash
-        nonisolated func deactivateSession() async {
+        func deactivateSession() async {
             // No-op: 保持 Session 開啟
             print("🛡️ [Audio] 忽略停用請求 (Always-On Strategy)")
         }
@@ -119,7 +118,9 @@ class STTService: ObservableObject {
         
         // 🔧 [修正] 直接在背景執行 async 函數，不再使用 detached task 以避免 actor isolation 問題
         // 1. 啟動 Session (async)
-        await configureAlwaysOnSession()
+        await MainActor.run {
+                    configureAlwaysOnSession()
+                }
         
         let recorder = await Task.detached(priority: .userInitiated) { () -> AVAudioRecorder? in
             let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("input.wav")
@@ -186,7 +187,7 @@ class STTService: ObservableObject {
         }
         
         // 3. 執行辨識
-        let promptText = "繁體中文桌遊對話。關鍵詞：\(currentKeywords.joined(separator: ", "))"
+        let _ = "繁體中文桌遊對話。關鍵詞：\(currentKeywords.joined(separator: ", "))"
         // 若 WhisperKit 版本支援 initialPrompt，可加入 promptText
         let options = DecodingOptions(language: "zh")
         

@@ -26,11 +26,14 @@ class MainViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     //private let synthesizer = AVSpeechSynthesizer()
     // ✅ [修正] 只保留一個 synthesizer 實例，避免衝突
-    private var synthesizer: AVSpeechSynthesizer?
+    private let synthesizer = AVSpeechSynthesizer()
     
     init() {
-        setupBindings()
-        udpService.startDiscovery()
+            setupBindings()
+            udpService.startDiscovery()
+            
+            // 🔥 [新增] 讓 TTS 代理人綁定 (選配，若未來需要監聽播放結束)
+            // synthesizer.delegate = self
     }
     
     private func setupBindings() {
@@ -124,23 +127,21 @@ class MainViewModel: ObservableObject {
     // MARK: - 錄音與 TTS 流程 (核心修正區域)
     
     func handleMicButtonTap() {
-        // 🔥 [新增] 強制打斷機制
-        // 如果正在講話，允許使用者按下按鈕強制停止播放並開始錄音
-        // 🔧 [修正] 使用統一的 synthesizer 實例
-        if synthesizer?.isSpeaking ?? false {
-            print("🛑 [測試] 強制中斷說話")
-            synthesizer?.stopSpeaking(at: .immediate)
-        }
+            // 🔥 [修改] 不再需要解包 (?)
+            if synthesizer.isSpeaking {
+                print("🛑 [測試] 強制中斷說話")
+                synthesizer.stopSpeaking(at: .immediate)
+            }
 
-        if isRecording {
-            stopAndSend()
-        } else {
-            isRecording = true
-            Task {
-                await sttService.startRecording()
+            if isRecording {
+                stopAndSend()
+            } else {
+                isRecording = true
+                Task {
+                    await sttService.startRecording()
+                }
             }
         }
-    }
     
     // MainViewModel.swift
 
@@ -219,48 +220,38 @@ class MainViewModel: ObservableObject {
     // MARK: - TTS 安全播放 (🔥 徹底解決 -66748 Crash)
     
     private func speak(_ text: String) async {
-            // 1. [背景] 準備播放環境 (包含 0.5s 等待，幫 TTS 鋪路)
-            if let oldSynth = self.synthesizer {
-                oldSynth.stopSpeaking(at: .immediate)
-                self.synthesizer = nil
+            // 1. 如果正在說話，先停止
+            if synthesizer.isSpeaking {
+                synthesizer.stopSpeaking(at: .immediate)
             }
             
-            // 呼叫我們寫好的鋪路函式
+            // 2. 確保 Session 狀態 (防禦性檢查)
+            // 由於 synthesizer 已經存在，這裡只是確保硬體路由正確
             await prepareSessionForPlayback()
             
-            // 2. [主執行緒] 重建 Synthesizer
-            if let oldSynth = self.synthesizer, oldSynth.isSpeaking {
-                oldSynth.stopSpeaking(at: .immediate)
-            }
-            
-            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s 緩衝
-            
-            // 建立全新的實例
-            let newSynthesizer = AVSpeechSynthesizer()
-            
-            // ❌❌❌ [關鍵修正：請刪除或註解掉這行] ❌❌❌
-            // newSynthesizer.usesApplicationAudioSession = false
-            // 註解掉它，代表 "usesApplicationAudioSession = true" (預設值)
-            // 意思就是：「好，我聽你的，我用你準備好的 Session。」
-            
-            self.synthesizer = newSynthesizer
-
+            // 3. 建立發音內容
             let utterance = AVSpeechUtterance(string: text)
             utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
             utterance.rate = AVSpeechUtteranceDefaultSpeechRate
             
-            print("🔊 [TTS] 嘗試播放 (使用 Shared Session): \(text.prefix(10))...")
-            newSynthesizer.speak(utterance)
+            // 🔥 [關鍵修正] 直接使用同一個 synthesizer 實體
+            print("🔊 [TTS] 播放: \(text.prefix(10))...")
+            synthesizer.speak(utterance)
+            
+            // 4. 更新 UI 狀態
+            DispatchQueue.main.async {
+                self.statusMessage = "您可以繼續提問..."
+            }
         }
 
     
     // 🔥 [核心] nonisolated: 脫離 MainActor，在背景執行
     /// 🔥 [修改] 不再切換 Category，只確保 Active 與正確的路由
-        nonisolated private func prepareSessionForPlayback() async {
+        @MainActor
+        private func prepareSessionForPlayback() {
             let session = AVAudioSession.sharedInstance()
             do {
-                // 再次確認它是 PlayAndRecord (防止被其他 App 改掉)
-                // 並且再次確保 defaultToSpeaker，以免聲音從聽筒出來
+                // 確保是 PlayAndRecord + DefaultToSpeaker
                 try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
                 try session.setActive(true)
             } catch {

@@ -11,6 +11,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		9904C8612F07A697009518DB /* Project_Akka_iPad_client.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = Project_Akka_iPad_client.xcodeproj; sourceTree = SOURCE_ROOT; };
 		99147C752F039F910035C2F6 /* Project_Akka_iPad_client.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Project_Akka_iPad_client.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -37,6 +38,7 @@
 		99147C6C2F039F910035C2F6 = {
 			isa = PBXGroup;
 			children = (
+				9904C8612F07A697009518DB /* Project_Akka_iPad_client.xcodeproj */,
 				99147C772F039F910035C2F6 /* Project_Akka_iPad_client */,
 				99147C762F039F910035C2F6 /* Products */,
 			);
