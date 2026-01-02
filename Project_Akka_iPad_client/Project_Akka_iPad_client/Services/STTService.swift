@@ -92,6 +92,7 @@ class STTService: ObservableObject {
         
         /// 🔥 [修改] 配置常駐型 Session
         /// 策略：設定為 PlayAndRecord + DefaultToSpeaker，同時滿足錄音與 TTS 擴音需求
+        @MainActor
         func configureAlwaysOnSession() {
             do {
                 let session = AVAudioSession.sharedInstance()

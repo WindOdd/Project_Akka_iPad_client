@@ -24,7 +24,6 @@ class MainViewModel: ObservableObject {
     
     private var fillerTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
-    //private let synthesizer = AVSpeechSynthesizer()
     // ✅ [修正] 只保留一個 synthesizer 實例，避免衝突
     private let synthesizer = AVSpeechSynthesizer()
     
@@ -200,7 +199,8 @@ class MainViewModel: ObservableObject {
                         self.chatHistory.append(aiMsg)
                         self.statusMessage = "阿卡說話中..."
                     }
-                    
+                    // 🔥 [Fix] 增加緩衝時間，防止與錄音結束撞車導致 Crash (-66748)
+                    try? await Task.sleep(nanoseconds: 600_000_000) // 0.6 秒
                     // 4. 播放 TTS (直接播放 API 回傳的文字)
                     await speak(response.response)
                     
@@ -219,31 +219,34 @@ class MainViewModel: ObservableObject {
     
     // MARK: - TTS 安全播放 (🔥 徹底解決 -66748 Crash)
     
-    private func speak(_ text: String) async {
-            // 1. 如果正在說話，先停止
+    // MARK: - TTS (Singleton Strategy)
+        
+        private func speak(_ text: String) async {
+            // 1. 如果正在說話，先停止 (直接用 self.synthesizer)
             if synthesizer.isSpeaking {
                 synthesizer.stopSpeaking(at: .immediate)
             }
             
-            // 2. 確保 Session 狀態 (防禦性檢查)
-            // 由於 synthesizer 已經存在，這裡只是確保硬體路由正確
-            await prepareSessionForPlayback()
+            // 2. 確保 Session 狀態 (切換到 MainActor 執行)
+            await MainActor.run {
+                prepareSessionForPlayback()
+            }
             
             // 3. 建立發音內容
             let utterance = AVSpeechUtterance(string: text)
             utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
             utterance.rate = AVSpeechUtteranceDefaultSpeechRate
             
-            // 🔥 [關鍵修正] 直接使用同一個 synthesizer 實體
             print("🔊 [TTS] 播放: \(text.prefix(10))...")
+            
+            // 🔥 [關鍵] 直接使用常駐的 synthesizer 實體，不再 new 新的
             synthesizer.speak(utterance)
             
-            // 4. 更新 UI 狀態
+            // 4. 更新 UI
             DispatchQueue.main.async {
                 self.statusMessage = "您可以繼續提問..."
             }
         }
-
     
     // 🔥 [核心] nonisolated: 脫離 MainActor，在背景執行
     /// 🔥 [修改] 不再切換 Category，只確保 Active 與正確的路由
