@@ -5,24 +5,26 @@ import Combine
 
 // MARK: - 模型定義
 enum WhisperModel: String, CaseIterable, Identifiable {
-    // 🔥 您目前使用的 Turbo 模型
+    // 🔥 [新加入] 您指定的 594MB Distil 模型 (非 Turbo，可能更穩)
+    case distilLargeV3_594MB = "distil-whisper_distil-large-v3_594MB"
+    
+    // 之前的選項
     case openaiLargeV3Turbo = "openai_whisper-large-v3-v20240930_turbo_632MB"
     case largeV3Turbo600MB = "distil-whisper_distil-large-v3_turbo_600MB"
     
-    // 備用選項
+    // 備用
     case medium = "medium"
     case base = "base"
-    case small = "small"
     
     var id: String { self.rawValue }
     
     var displayName: String {
         switch self {
-        case .openaiLargeV3Turbo: return "Large V3 Turbo (632MB)"
+        case .distilLargeV3_594MB: return "Distil V3 (594MB) 🆕"
+        case .openaiLargeV3Turbo: return "OpenAI Turbo (632MB)"
         case .largeV3Turbo600MB: return "Distil Turbo (600MB)"
         case .medium: return "Medium (平衡)"
         case .base: return "Base (快速)"
-        case .small: return "Small (極速)"
         }
     }
 }
@@ -38,7 +40,8 @@ class STTService: ObservableObject {
            let model = WhisperModel(rawValue: saved) {
             return model
         }
-        return .openaiLargeV3Turbo
+        // 🔥 預設改為您想測試的這個新模型
+        return .distilLargeV3_594MB
     }()
     
     // MARK: - Internal Properties
@@ -64,8 +67,8 @@ class STTService: ObservableObject {
             print("🚀 開始載入模型: \(currentModel.rawValue)")
             pipe = try await WhisperKit(model: currentModel.rawValue, download: true)
             
-            // 🔥 [自動熱身] 防止第一次辨識卡頓
-            self.statusMessage = "正在為 A16 晶片最佳化 (熱身中)..."
+            // 🔥 [Warmup] 熱身：對 A16 晶片非常重要，避免第一次卡頓
+            self.statusMessage = "正在為晶片最佳化 (熱身中)..."
             print("🔥 開始模型熱身 (Warmup)...")
             try? await pipe?.transcribe(audioArray: [Float](repeating: 0, count: 16000))
             
@@ -120,6 +123,7 @@ class STTService: ObservableObject {
         let recorder = await Task.detached(priority: .userInitiated) { () -> AVAudioRecorder? in
             let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("input.wav")
             
+            // Whisper 偏好 16kHz
             let settings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: 16000,
@@ -165,30 +169,32 @@ class STTService: ObservableObject {
             if (attr[.size] as? UInt64 ?? 0) < 4096 { return nil }
         } catch { return nil }
         
-        // 🔥 Prompt 設定：讓模型知道這是繁體中文對話
+        // 🔥🔥 [關鍵修正] 啟用 Prompt (之前被寫成 let _ = ... 導致被丟棄)
         let promptText = "繁體中文桌遊對話。請使用繁體中文回答。關鍵詞：\(currentKeywords.joined(separator: ", "))"
         
+        // 將文字轉為 Token
         var promptTokens: [Int] = []
         if let tokenizer = pipe.tokenizer {
             promptTokens = tokenizer.encode(text: promptText)
                 .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+            
+            print("ℹ️ [Prompt] 啟用成功，Token 數: \(promptTokens.count)")
+        } else {
+            print("⚠️ [Prompt] Tokenizer 失效，Prompt 未啟用")
         }
         
-        // 🔥🔥 [關鍵修正] Turbo 模型專用參數調整 🔥🔥
+        // 🔥🔥 [關鍵修正] 設定 DecodingOptions
         let options = DecodingOptions(
             language: "zh",
             temperature: 0.0,
-            promptTokens: promptTokens,
+            promptTokens: promptTokens, // 👈 必須傳入這個，Distil 才會講中文
             
-            // 1. 關閉信心度門檻：不要因為這句話講得含糊就丟掉
-            logProbThreshold: nil,
-            
-            // 2. 提高靜音判定門檻 (預設 0.6 -> 改為 0.95)
-            // 意思：除非你有 95% 的把握這是靜音，否則都給我辨識出來
-            noSpeechThreshold: 0.95
+            // 👇 解決「錄不到聲音」或「回傳 nil」的關鍵參數
+            logProbThreshold: -20.0, // 設為極低，強迫模型吐出文字
+            noSpeechThreshold: 0.95  // 提高靜音門檻
         )
         
-        print("📝 開始辨識 (Model: \(currentModel.displayName), Prompt長度: \(promptTokens.count))")
+        print("📝 開始辨識 (Model: \(currentModel.displayName))")
         
         do {
             let result = try await pipe.transcribe(audioPath: url.path, decodeOptions: options)

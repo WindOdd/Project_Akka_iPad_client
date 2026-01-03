@@ -35,6 +35,11 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		9904C8962F081AC3009518DB /* Products */ = {
+			isa = PBXGroup;
+			name = Products;
+			sourceTree = "<group>";
+		};
 		99147C6C2F039F910035C2F6 = {
 			isa = PBXGroup;
 			children = (
@@ -109,6 +114,12 @@
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 99147C762F039F910035C2F6 /* Products */;
 			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = 9904C8962F081AC3009518DB /* Products */;
+					ProjectRef = 9904C8612F07A697009518DB /* Project_Akka_iPad_client.xcodeproj */;
+				},
+			);
 			projectRoot = "";
 			targets = (
 				99147C742F039F910035C2F6 /* Project_Akka_iPad_client */,
