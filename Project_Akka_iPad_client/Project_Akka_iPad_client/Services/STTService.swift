@@ -5,26 +5,19 @@ import Combine
 
 // MARK: - 模型定義
 enum WhisperModel: String, CaseIterable, Identifiable {
-    // 🔥 [新加入] 您指定的 594MB Distil 模型 (非 Turbo，可能更穩)
-    case distilLargeV3_594MB = "distil-whisper_distil-large-v3_594MB"
+    // 🔥 唯一推薦：OpenAI 官方 Turbo 量化版 (626MB)
+    // 這是目前 iPad 11th (A16) 效能與準度的最佳平衡點
+    case openaiLargeV3Turbo_626MB = "openai_whisper-large-v3-v20240930_626MB"
     
-    // 之前的選項
-    case openaiLargeV3Turbo = "openai_whisper-large-v3-v20240930_turbo_632MB"
-    case largeV3Turbo600MB = "distil-whisper_distil-large-v3_turbo_600MB"
-    
-    // 備用
-    case medium = "medium"
-    case base = "base"
+    // 備用：萬一 Turbo 真的跑不動才用這個 (但 Turbo 應該沒問題)
+    case small = "small"
     
     var id: String { self.rawValue }
     
     var displayName: String {
         switch self {
-        case .distilLargeV3_594MB: return "Distil V3 (594MB) 🆕"
-        case .openaiLargeV3Turbo: return "OpenAI Turbo (632MB)"
-        case .largeV3Turbo600MB: return "Distil Turbo (600MB)"
-        case .medium: return "Medium (平衡)"
-        case .base: return "Base (快速)"
+        case .openaiLargeV3Turbo_626MB: return "OpenAI Turbo (626MB 👑)"
+        case .small: return "Small (備用)"
         }
     }
 }
@@ -36,12 +29,8 @@ class STTService: ObservableObject {
     @Published var statusMessage = "等待選擇遊戲..."
     
     @Published var currentModel: WhisperModel = {
-        if let saved = UserDefaults.standard.string(forKey: "selected_whisper_model"),
-           let model = WhisperModel(rawValue: saved) {
-            return model
-        }
-        // 🔥 預設改為您想測試的這個新模型
-        return .distilLargeV3_594MB
+        // 🔥 強制鎖定為 OpenAI Turbo，忽略之前的錯誤設定
+        return .openaiLargeV3Turbo_626MB
     }()
     
     // MARK: - Internal Properties
@@ -65,10 +54,11 @@ class STTService: ObservableObject {
         
         do {
             print("🚀 開始載入模型: \(currentModel.rawValue)")
+            // download: true 會自動檢查並下載
             pipe = try await WhisperKit(model: currentModel.rawValue, download: true)
             
-            // 🔥 [Warmup] 熱身：對 A16 晶片非常重要，避免第一次卡頓
-            self.statusMessage = "正在為晶片最佳化 (熱身中)..."
+            // 🔥 [Warmup] 熱身：避免第一次卡頓
+            self.statusMessage = "正在為 A16 晶片最佳化 (熱身中)..."
             print("🔥 開始模型熱身 (Warmup)...")
             try? await pipe?.transcribe(audioArray: [Float](repeating: 0, count: 16000))
             
@@ -77,8 +67,9 @@ class STTService: ObservableObject {
             print("✅ 模型載入與熱身完成")
             
         } catch {
-            self.statusMessage = "載入失敗: \(error.localizedDescription)"
+            self.statusMessage = "載入失敗: 請檢查網路或重啟 App"
             print("❌ Whisper load error: \(error)")
+            // 發生錯誤時重置 loading 狀態，讓使用者知道失敗了
             self.isModelLoading = false
         }
     }
@@ -123,7 +114,6 @@ class STTService: ObservableObject {
         let recorder = await Task.detached(priority: .userInitiated) { () -> AVAudioRecorder? in
             let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("input.wav")
             
-            // Whisper 偏好 16kHz
             let settings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: 16000,
@@ -169,29 +159,28 @@ class STTService: ObservableObject {
             if (attr[.size] as? UInt64 ?? 0) < 4096 { return nil }
         } catch { return nil }
         
-        // 🔥🔥 [關鍵修正] 啟用 Prompt (之前被寫成 let _ = ... 導致被丟棄)
+        // 🔥 [Prompt] 繁體中文護身符
         let promptText = "繁體中文桌遊對話。請使用繁體中文回答。關鍵詞：\(currentKeywords.joined(separator: ", "))"
         
-        // 將文字轉為 Token
         var promptTokens: [Int] = []
         if let tokenizer = pipe.tokenizer {
             promptTokens = tokenizer.encode(text: promptText)
                 .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
-            
-            print("ℹ️ [Prompt] 啟用成功，Token 數: \(promptTokens.count)")
-        } else {
-            print("⚠️ [Prompt] Tokenizer 失效，Prompt 未啟用")
+            print("ℹ️ [Prompt] 啟用成功，Tokens數量: \(promptTokens.count)")
         }
         
-        // 🔥🔥 [關鍵修正] 設定 DecodingOptions
+        // 🔥🔥 [關鍵參數] OpenAI Turbo 專用設定 🔥🔥
         let options = DecodingOptions(
             language: "zh",
             temperature: 0.0,
-            promptTokens: promptTokens, // 👈 必須傳入這個，Distil 才會講中文
+            promptTokens: promptTokens, // 👈 必備：防止變英文
             
-            // 👇 解決「錄不到聲音」或「回傳 nil」的關鍵參數
-            logProbThreshold: -20.0, // 設為極低，強迫模型吐出文字
-            noSpeechThreshold: 0.95  // 提高靜音門檻
+            // 1. 關閉信心度檢查 (設為 -20.0)
+            // 👈 必備：防止錄不到聲音 (解決 Turbo 太敏感問題)
+            logProbThreshold: -20.0,
+            
+            // 2. 提高靜音判定門檻
+            noSpeechThreshold: 0.95
         )
         
         print("📝 開始辨識 (Model: \(currentModel.displayName))")
@@ -208,6 +197,7 @@ class STTService: ObservableObject {
             return (text?.isEmpty ?? true) ? nil : text
         } catch {
             print("❌ 辨識失敗: \(error)")
+            // 這裡可以考慮讓使用者知道發生了什麼事，例如跳出 Alert
             return nil
         }
     }

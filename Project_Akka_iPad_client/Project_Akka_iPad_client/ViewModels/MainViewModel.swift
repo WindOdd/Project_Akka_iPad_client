@@ -143,10 +143,21 @@ class MainViewModel: ObservableObject {
     }
     
     func changeModel(to model: WhisperModel) {
-        exitGame()
-        sttService.switchModel(to: model)
-        Task { await sttService.setupWhisper(keywords: []) }
-    }
+            exitGame()
+            
+            // 1. 先切換設定 (這是同步的，馬上執行)
+            sttService.switchModel(to: model)
+            
+            // 2. 開啟一個背景任務來「等待」與「重新載入」
+            Task {
+                // ✅ 正確！在 Task 裡面才能使用 await
+                print("⏳ 等待 ANE 資源釋放...")
+                try? await Task.sleep(nanoseconds: 1_500_000_000) // 等待 1.5 秒
+                
+                // 3. 休息完後，開始載入新模型
+                await sttService.setupWhisper(keywords: [])
+            }
+        }
     
     func reloadModel() {
         exitGame()
