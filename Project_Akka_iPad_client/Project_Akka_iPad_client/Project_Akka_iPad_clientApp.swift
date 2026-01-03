@@ -9,6 +9,9 @@ import SwiftUI
 
 @main
 struct Project_Akka_iPad_clientApp: App {
+    init() {
+            PermissionsManager.shared.requestAllPermissions()
+        }
     var body: some Scene {
         WindowGroup {
             ContentView()

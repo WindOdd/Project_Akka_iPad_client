@@ -26,7 +26,7 @@ class UDPDiscoveryService: ObservableObject {
     private var currentRetry = 0
     private var currentCycle = 0
     
-    // 用於取消延遲任務的 WorkItem (取代 Timer)
+    // 用於取消延遲任務的 WorkItem
     private var pendingTask: DispatchWorkItem?
     
     // MARK: - Public Methods
@@ -44,7 +44,6 @@ class UDPDiscoveryService: ObservableObject {
         
         if setupSocket() {
             startReceivingLoop()
-            // 啟動廣播排程
             scheduleNextBroadcast(delay: 0.1)
         } else {
             self.isScanning = false
@@ -53,76 +52,54 @@ class UDPDiscoveryService: ObservableObject {
     }
     
     func stopDiscovery() {
-        // 取消待執行的任務
         pendingTask?.cancel()
         pendingTask = nil
-        
         isScanning = false
-        
         if socketFD >= 0 {
             close(socketFD)
             socketFD = -1
         }
     }
     
-    // MARK: - Logic Core (Recursive Loop)
+    // MARK: - Logic Core
     
     private func scheduleNextBroadcast(delay: TimeInterval) {
-        // 建立新的任務
         let task = DispatchWorkItem { [weak self] in
             self?.performBroadcastStep()
         }
         self.pendingTask = task
-        
-        // 排程執行
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
     }
     
     private func performBroadcastStep() {
-        // 若已連線或被停止，直接退出
         guard isScanning && !isConnected else { return }
         
-        // 檢查是否完成一輪 (6次)
         if currentRetry >= maxRetriesPerCycle {
-            // 進入下一輪判定
             handleCycleCompletion()
             return
         }
         
-        // --- 執行廣播 ---
         currentRetry += 1
-        _ = (currentCycle * maxRetriesPerCycle) + currentRetry
-        
-        // 更新 UI (顯示輪數與次數)
         self.statusMessage = "搜尋中 (輪次 \(currentCycle + 1)/\(maxCycles) - 次數 \(currentRetry)/\(maxRetriesPerCycle))..."
         
         sendBroadcast()
         
-        // --- 排程下一次 (隨機間隔 1~3 秒) ---
-        // 目的：避免多台 iPad 同時重開機造成封包碰撞
+        // 隨機間隔避免碰撞
         let randomInterval = Double.random(in: 1.0...3.0)
         scheduleNextBroadcast(delay: randomInterval)
     }
     
     private func handleCycleCompletion() {
         currentCycle += 1
-        
-        // 檢查是否超過總輪數 (10輪)
         if currentCycle >= maxCycles {
             print("⚠️ UDP 搜尋徹底失敗 (10輪結束)")
             stopDiscovery()
             self.statusMessage = "找不到主機，請手動設定 IP"
             return
         }
-        
-        // --- 進入冷卻期 (30秒) ---
         print("⏳ 第 \(currentCycle) 輪搜尋結束，冷卻 \(Int(cooldownSeconds)) 秒...")
         self.statusMessage = "暫無回應，\(Int(cooldownSeconds)) 秒後重試..."
-        
-        // 重置當前輪的嘗試次數
         currentRetry = 0
-        
-        // 排程 30 秒後開始下一輪
         scheduleNextBroadcast(delay: cooldownSeconds)
     }
     
@@ -149,9 +126,21 @@ class UDPDiscoveryService: ObservableObject {
         return bindResult >= 0
     }
     
+    // 🔥 [核心修正] 發送廣播邏輯
     private func sendBroadcast() {
-        guard socketFD >= 0 else { return }
-        guard let broadcastIP = getWiFiBroadcastAddress() else { return }
+        guard socketFD >= 0 else {
+            print("❌ Socket 未就緒")
+            return
+        }
+        
+        // 1. 取得真正可用的廣播位址 (避開 255.255.255.255，也避開 nil)
+        guard let broadcastIP = getWiFiBroadcastAddress() else {
+            print("⚠️ 無法找到任何支援廣播的活躍網卡 (請檢查 WiFi 連線)")
+            // 這裡不再使用 255.255.255.255 當保底，因為 iOS 會擋
+            return
+        }
+        
+        // print("📡 發送 UDP 廣播至: \(broadcastIP)") // Debug
         
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
@@ -161,45 +150,44 @@ class UDPDiscoveryService: ObservableObject {
         let data = MAGIC_STRING.data(using: .utf8)!
         
         data.withUnsafeBytes { ptr in
-            _ = sendto(socketFD, ptr.baseAddress, data.count, 0,
+            let result = sendto(socketFD, ptr.baseAddress, data.count, 0,
                        withUnsafePointer(to: &addr) {
                            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { $0 }
                        },
                        socklen_t(MemoryLayout<sockaddr_in>.size))
+            
+            if result < 0 {
+                let errorString = String(cString: strerror(errno))
+                print("❌ UDP 發送失敗: \(errorString) (Error: \(errno))")
+            }
         }
     }
     
     private func startReceivingLoop() {
-            dispatchQueue.async { [weak self] in
-                guard let self = self else { return }
-                var buffer = [UInt8](repeating: 0, count: 2048)
-                
-                while self.isScanning && self.socketFD >= 0 {
-                    let receivedBytes = recvfrom(self.socketFD, &buffer, buffer.count, 0, nil, nil)
-                    if receivedBytes > 0 {
-                        let data = Data(bytes: buffer, count: receivedBytes)
+        dispatchQueue.async { [weak self] in
+            guard let self = self else { return }
+            var buffer = [UInt8](repeating: 0, count: 2048)
+            
+            while self.isScanning && self.socketFD >= 0 {
+                let receivedBytes = recvfrom(self.socketFD, &buffer, buffer.count, 0, nil, nil)
+                if receivedBytes > 0 {
+                    let data = Data(bytes: buffer, count: receivedBytes)
+                    if let rawString = String(data: data, encoding: .utf8) {
+                        // print("📦 [UDP]: \(rawString)") // Debug
                         
-                        // 🔥 [Debug] 強制印出原始封包內容
-                        if let rawString = String(data: data, encoding: .utf8) {
-                            print("📦 [Raw UDP Received]: \(rawString)")
-                            
-                            // 忽略自己的廣播回音
-                            if rawString == MAGIC_STRING { continue }
-                            
-                            // 檢查關鍵字
-                            if rawString.contains("ip") {
-                                print("✅ 偵測到 IP 欄位，準備解析...")
-                                DispatchQueue.main.async {
-                                    self.handleSuccess(json: rawString)
-                                }
-                            } else {
-                                print("⚠️ 收到封包但不包含 'ip' 欄位，忽略之。")
+                        if rawString == MAGIC_STRING { continue }
+                        
+                        if rawString.contains("ip") {
+                            print("✅ 收到 Server 回應，準備解析...")
+                            DispatchQueue.main.async {
+                                self.handleSuccess(json: rawString)
                             }
                         }
                     }
                 }
             }
         }
+    }
     
     private func handleSuccess(json: String) {
         self.isConnected = true
@@ -217,6 +205,7 @@ class UDPDiscoveryService: ObservableObject {
         }
     }
     
+    // 🔥 [核心修正] 智慧尋找正確的廣播位址 (移除 en0 限制)
     private func getWiFiBroadcastAddress() -> String? {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0 else { return nil }
@@ -225,20 +214,42 @@ class UDPDiscoveryService: ObservableObject {
         var ptr = ifaddr
         while ptr != nil {
             let interface = ptr!.pointee
+            
+            // 1. 必須是 IPv4
             if interface.ifa_addr.pointee.sa_family == UInt8(AF_INET) {
-                let name = String(cString: interface.ifa_name)
-                if name == "en0" {
+                let flags = Int32(interface.ifa_flags)
+                
+                // 2. 必須是 開啟(UP) 且 支援廣播(BROADCAST) 且 不是Loopback
+                let isUp = (flags & (IFF_UP)) == (IFF_UP)
+                let isLoopback = (flags & (IFF_LOOPBACK)) == (IFF_LOOPBACK)
+                let supportsBroadcast = (flags & (IFF_BROADCAST)) == (IFF_BROADCAST)
+                
+                if isUp && !isLoopback && supportsBroadcast {
+                    let name = String(cString: interface.ifa_name)
+                    
+                    // 3. 計算子網域廣播位址 (Subnet Directed Broadcast)
+                    // 這是最安全的做法，算出來類似 192.168.1.255，iOS 不會擋
                     let addr = interface.ifa_addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
                     let mask = interface.ifa_netmask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
-                    let broadcastVal = (addr.sin_addr.s_addr & mask.sin_addr.s_addr) | (~mask.sin_addr.s_addr)
+                    
+                    // Broadcast = (IP | ~Mask)
+                    let broadcastVal = (addr.sin_addr.s_addr | (~mask.sin_addr.s_addr))
+                    
                     var broadcastAddr = sockaddr_in()
                     broadcastAddr.sin_family = sa_family_t(AF_INET)
                     broadcastAddr.sin_addr.s_addr = broadcastVal
-                    return String(cString: inet_ntoa(broadcastAddr.sin_addr))
+                    
+                    let ipString = String(cString: inet_ntoa(broadcastAddr.sin_addr))
+                    
+                    // 4. 只要找到合法的網卡就回傳 (不再檢查是否叫 en0)
+                    // 通常 en 開頭的是 WiFi，bridge 開頭的是熱點，這些都可用
+                    print("✅ 發現可用網卡: \(name), 廣播位址: \(ipString)")
+                    return ipString
                 }
             }
             ptr = interface.ifa_next
         }
+        
         return nil
     }
 }

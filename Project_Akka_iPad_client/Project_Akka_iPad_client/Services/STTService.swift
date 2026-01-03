@@ -6,10 +6,9 @@ import Combine
 // MARK: - 模型定義
 enum WhisperModel: String, CaseIterable, Identifiable {
     // 🔥 唯一推薦：OpenAI 官方 Turbo 量化版 (626MB)
-    // 這是目前 iPad 11th (A16) 效能與準度的最佳平衡點
     case openaiLargeV3Turbo_626MB = "openai_whisper-large-v3-v20240930_626MB"
     
-    // 備用：萬一 Turbo 真的跑不動才用這個 (但 Turbo 應該沒問題)
+    // 備用
     case small = "small"
     
     var id: String { self.rawValue }
@@ -29,7 +28,7 @@ class STTService: ObservableObject {
     @Published var statusMessage = "等待選擇遊戲..."
     
     @Published var currentModel: WhisperModel = {
-        // 🔥 強制鎖定為 OpenAI Turbo，忽略之前的錯誤設定
+        // 🔥 強制鎖定為 OpenAI Turbo
         return .openaiLargeV3Turbo_626MB
     }()
     
@@ -54,10 +53,9 @@ class STTService: ObservableObject {
         
         do {
             print("🚀 開始載入模型: \(currentModel.rawValue)")
-            // download: true 會自動檢查並下載
             pipe = try await WhisperKit(model: currentModel.rawValue, download: true)
             
-            // 🔥 [Warmup] 熱身：避免第一次卡頓
+            // 🔥 [Warmup] 熱身
             self.statusMessage = "正在為 A16 晶片最佳化 (熱身中)..."
             print("🔥 開始模型熱身 (Warmup)...")
             try? await pipe?.transcribe(audioArray: [Float](repeating: 0, count: 16000))
@@ -69,7 +67,6 @@ class STTService: ObservableObject {
         } catch {
             self.statusMessage = "載入失敗: 請檢查網路或重啟 App"
             print("❌ Whisper load error: \(error)")
-            // 發生錯誤時重置 loading 狀態，讓使用者知道失敗了
             self.isModelLoading = false
         }
     }
@@ -159,7 +156,7 @@ class STTService: ObservableObject {
             if (attr[.size] as? UInt64 ?? 0) < 4096 { return nil }
         } catch { return nil }
         
-        // 🔥 [Prompt] 繁體中文護身符
+        // 🔥 [Prompt] 防止變英文
         let promptText = "繁體中文桌遊對話。請使用繁體中文回答。關鍵詞：\(currentKeywords.joined(separator: ", "))"
         
         var promptTokens: [Int] = []
@@ -169,18 +166,22 @@ class STTService: ObservableObject {
             print("ℹ️ [Prompt] 啟用成功，Tokens數量: \(promptTokens.count)")
         }
         
-        // 🔥🔥 [關鍵參數] OpenAI Turbo 專用設定 🔥🔥
+        // 🔥🔥 [極限修正] Turbo 模型超級靈敏設定 🔥🔥
         let options = DecodingOptions(
             language: "zh",
             temperature: 0.0,
-            promptTokens: promptTokens, // 👈 必備：防止變英文
+            promptTokens: promptTokens,
             
-            // 1. 關閉信心度檢查 (設為 -20.0)
-            // 👈 必備：防止錄不到聲音 (解決 Turbo 太敏感問題)
-            logProbThreshold: -20.0,
+            // 1. 強制忽略信心分數 (設為 -100.0)
+            // 只要有聲音，不管模型多沒把握，都要吐出文字
+            compressionRatioThreshold: 2.4,
+            logProbThreshold: -100.0,
             
-            // 2. 提高靜音判定門檻
-            noSpeechThreshold: 0.95
+            // 2. 極限靜音門檻
+            // 除非 99.5% 確定是靜音，否則都視為有說話
+            noSpeechThreshold: 0.995,
+            
+            // 3. 避免無窮迴圈
         )
         
         print("📝 開始辨識 (Model: \(currentModel.displayName))")
@@ -197,7 +198,6 @@ class STTService: ObservableObject {
             return (text?.isEmpty ?? true) ? nil : text
         } catch {
             print("❌ 辨識失敗: \(error)")
-            // 這裡可以考慮讓使用者知道發生了什麼事，例如跳出 Alert
             return nil
         }
     }

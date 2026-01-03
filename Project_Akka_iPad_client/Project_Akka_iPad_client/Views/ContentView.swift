@@ -108,8 +108,17 @@ struct ContentView: View {
                             .focused($isInputFocused)
                         
                         Button("連線") {
-                            viewModel.udpService.serverIP = manualIP
-                            Task { await viewModel.refreshGames(ip: manualIP) }
+                            // 🔥 [修正 1] 自動去除前後空白與換行，防止手殘或複製貼上的隱形字元
+                            let cleanIP = manualIP.trimmingCharacters(in: .whitespacesAndNewlines)
+                            // 將清理後的 IP 存回變數 (讓使用者看到改變)
+                            manualIP = cleanIP
+                            if !cleanIP.isEmpty {
+                           // 🔥 [修正 2] 只更新變數，不要在這裡呼叫 refreshGames
+                           // 因為 MainViewModel 已經有綁定 udpService.serverIP 的監聽了
+                        // 這樣可以避免「按一下跑兩次」的 Bug
+                            viewModel.udpService.serverIP = cleanIP
+                            print("🔗 [Manual Connect] 設定 IP 為: \(cleanIP)，等待監聽器觸發連線...")
+                            }
                             isInputFocused = false
                         }
                         .buttonStyle(.borderedProminent)

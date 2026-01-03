@@ -5,27 +5,38 @@ class APIService: ObservableObject {
     
     // MARK: - API 1: 取得支援遊戲列表 (Get Supported Games)
 
-    func fetchGames(ip: String) async throws -> [GameInfo] {
-            guard let url = URL(string: "http://\(ip):8000/api/games") else { throw URLError(.badURL) }
+    // 檔案：Services/APIService.swift
+
+        func fetchGames(ip: String) async throws -> [GameInfo] {
+                // 🔥 [Debug] 印出正在嘗試的完整網址，方便檢查 IP   是否正確
+                let urlString = "http://\(ip):8000/api/games"
+                print("📡 嘗試連線: \(urlString)")
             
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                
-                // 🔥 [Debug] 印出 Server 回傳的 HTTP 狀態碼與內容
-                if let httpResponse = response as? HTTPURLResponse {
-                    print("📡 [HTTP Status]: \(httpResponse.statusCode)")
-                }
-                if let rawJSON = String(data: data, encoding: .utf8) {
-                    print("📄 [API 1 Raw Data]: \(rawJSON)")
+                // 檢查 URL 是否建立成功
+                guard let url = URL(string: urlString) else {
+                    print("❌ [API 1 Error] URL 建立失敗！請檢查 IP 是否包含空白或非法字元: [\(ip)]")
+                    throw URLError(.badURL)
                 }
                 
-                let decodedResponse = try JSONDecoder().decode(GameListResponse.self, from: data)
-                return decodedResponse.games
-            } catch {
-                print("❌ [API 1 Error]: \(error)") // 這裡會告訴你是不是 JSON 欄位對不上
-                throw error
+                do {
+                    // 設定短一點的 Timeout (5秒)，不要讓介面卡住太久
+                    let config = URLSessionConfiguration.default
+                    config.timeoutIntervalForRequest = 5
+                    let session = URLSession(configuration: config)
+                    
+                    let (data, response) = try await session.data(from: url)
+                    
+                    if let httpResponse = response as? HTTPURLResponse {
+                        print("📡 [API 1 Response Code]: \(httpResponse.statusCode)")
+                    }
+                    
+                    let decodedResponse = try JSONDecoder().decode(GameListResponse.self, from: data)
+                    return decodedResponse.games
+                } catch {
+                    print("❌ [API 1 Failed]: \(error.localizedDescription)")
+                    throw error
+                }
             }
-        }
     // MARK: - API 2: 取得 STT 修正關鍵字 (Get STT Keywords)
 
     func fetchKeywords(ip: String, gameId: String) async throws -> [String] {
