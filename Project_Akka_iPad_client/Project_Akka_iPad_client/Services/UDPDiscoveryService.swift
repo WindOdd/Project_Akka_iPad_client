@@ -5,7 +5,12 @@ import Darwin
 
 let UDP_PORT: UInt16 = 37020
 let MAGIC_STRING = "DISCOVER_AKKA_SERVER"
-
+struct UDPConfig {
+    static let port: UInt16 = 37020
+    static let magicString = "DISCOVER_AKKA_SERVER"
+    static let maxRetries = 6
+    static let maxCycles = 10
+}
 class UDPDiscoveryService: ObservableObject {
     // MARK: - Published States
     @Published var serverIP: String?
@@ -144,10 +149,10 @@ class UDPDiscoveryService: ObservableObject {
         
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = UDP_PORT.bigEndian
+        addr.sin_port = UDPConfig.port.bigEndian
         addr.sin_addr.s_addr = inet_addr(broadcastIP)
         
-        let data = MAGIC_STRING.data(using: .utf8)!
+        let data = UDPConfig.magicString.data(using: .utf8)!
         
         data.withUnsafeBytes { ptr in
             let result = sendto(socketFD, ptr.baseAddress, data.count, 0,

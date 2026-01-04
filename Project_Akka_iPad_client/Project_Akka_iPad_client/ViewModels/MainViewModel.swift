@@ -197,19 +197,19 @@ class MainViewModel: ObservableObject {
             Task {
                 // 1. 取得 STT 文字
                 guard let userText = await sttService.stopAndTranscribe(), !userText.isEmpty else {
-                    DispatchQueue.main.async {
+                    //DispatchQueue.main.async {
                         self.isThinking = false
                         self.stopLatencyMasking()
                         self.statusMessage = "聽不清楚，請再試一次"
-                    }
+                    //}
                     return
                 }
                 
                 // 更新 UI (User)
                 let userMsg = ChatMessage(role: "user", content: userText, intent: "")
-                DispatchQueue.main.async {
-                    self.chatHistory.append(userMsg)
-                }
+                //DispatchQueue.main.async {
+                self.chatHistory.append(userMsg)
+                //}
                 
                 // 2. 準備 API Request
                 // 確保有選中遊戲與 IP
@@ -236,13 +236,13 @@ class MainViewModel: ObservableObject {
                     // 收到回應，停止 Masking
                     self.stopLatencyMasking()
                     
-                    DispatchQueue.main.async {
-                        self.isThinking = false
-                        // 更新 UI (Assistant)
-                        let aiMsg = ChatMessage(role: "assistant", content: response.response, intent: response.intent)
-                        self.chatHistory.append(aiMsg)
-                        self.statusMessage = "阿卡說話中..."
-                    }
+                    //DispatchQueue.main.async {
+                    // ✅ [修改] 直接更新 UI
+                    self.isThinking = false
+                    let aiMsg = ChatMessage(role: "assistant", content: response.response, intent: response.intent)
+                    self.chatHistory.append(aiMsg)
+                    self.statusMessage = "阿卡說話中..."
+                    //}
                     // 🔥 [Fix] 增加緩衝時間，防止與錄音結束撞車導致 Crash (-66748)
                     try? await Task.sleep(nanoseconds: 600_000_000) // 0.6 秒
                     // 4. 播放 TTS (直接播放 API 回傳的文字)
@@ -251,12 +251,12 @@ class MainViewModel: ObservableObject {
                 } catch {
                     print("API Error: \(error)")
                     self.stopLatencyMasking()
-                    DispatchQueue.main.async {
-                        self.isThinking = false
-                        self.statusMessage = "連線逾時或錯誤"
-                        // 錯誤時也可以唸出來 (選擇性)
-                        Task { await self.speak("抱歉，連線好像有點問題，請再試一次。") }
-                    }
+                    //DispatchQueue.main.async {
+                    self.isThinking = false
+                    self.statusMessage = "連線逾時或錯誤"
+                    // 錯誤時也可以唸出來 (選擇性)
+                    Task { await self.speak("抱歉，連線好像有點問題，請再試一次。") }
+                    //}
                 }
             }
         }

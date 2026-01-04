@@ -6,7 +6,14 @@ class APIService: ObservableObject {
     // MARK: - API 1: 取得支援遊戲列表 (Get Supported Games)
 
     // 檔案：Services/APIService.swift
-
+    // 👇 [新增] 1. 定義常駐的 session
+        private let session: URLSession
+    // 👇 [新增] 2. 在 init 初始化
+        init() {
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 5
+            self.session = URLSession(configuration: config)
+        }
         func fetchGames(ip: String) async throws -> [GameInfo] {
                 // 🔥 [Debug] 印出正在嘗試的完整網址，方便檢查 IP   是否正確
                 let urlString = "http://\(ip):8000/api/games"
@@ -20,9 +27,9 @@ class APIService: ObservableObject {
                 
                 do {
                     // 設定短一點的 Timeout (5秒)，不要讓介面卡住太久
-                    let config = URLSessionConfiguration.default
-                    config.timeoutIntervalForRequest = 5
-                    let session = URLSession(configuration: config)
+                    //let config = URLSessionConfiguration.default
+                    //config.timeoutIntervalForRequest = 5
+                    //let session = URLSession(configuration: config)
                     
                     let (data, response) = try await session.data(from: url)
                     

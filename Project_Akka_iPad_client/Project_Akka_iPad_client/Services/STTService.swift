@@ -47,7 +47,8 @@ class STTService: ObservableObject {
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
     private var nativeLastTranscription: String?
-    
+    // 👇 [新增] 用來暫存等待中的 Continuation
+    private var recognitionContinuation: CheckedContinuation<String?, Never>?
     // MARK: - 模型切換與設定
     
     func setupWhisper(keywords: [String]) async {
@@ -172,19 +173,35 @@ class STTService: ObservableObject {
             self.statusMessage = "正在聆聽 (Native)..."
             
             // 啟動 Task
-            recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { result, error in
-                if let result = result {
-                    self.nativeLastTranscription = result.bestTranscription.formattedString
-                }
-                if error != nil {
-                    self.stopNativeAudioEngine()
+            // 👇 [修改] 這裡的閉包內容要更新
+                    recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+                        guard let self = self else { return }
+                        
+                        if let result = result {
+                            // 1. 實時更新文字
+                            self.nativeLastTranscription = result.bestTranscription.formattedString
+                            
+                            // 2. ✅ [新增] 如果是最終結果 (isFinal)，就喚醒等待中的 Continuation
+                            if result.isFinal {
+                                self.recognitionContinuation?.resume(returning: self.nativeLastTranscription)
+                                self.recognitionContinuation = nil
+                            }
+                        }
+                        
+                        if let error = error {
+                            self.stopNativeAudioEngine()
+                            
+                            // 3. ✅ [新增] 如果發生錯誤，也要喚醒 Continuation (回傳目前的結果或 nil)
+                            // 這樣 stopNativeRecordingAndGetResult 就不會一直卡住
+                            self.recognitionContinuation?.resume(returning: self.nativeLastTranscription)
+                            self.recognitionContinuation = nil
+                        }
+                    }
+                    print("🎙️ [Native] 開始錄音")
+                } catch {
+                    print("❌ [Native] 啟動失敗: \(error)")
                 }
             }
-            print("🎙️ [Native] 開始錄音")
-        } catch {
-            print("❌ [Native] 啟動失敗: \(error)")
-        }
-    }
     
     private func stopNativeAudioEngine() {
         if audioEngine.isRunning {
@@ -197,19 +214,41 @@ class STTService: ObservableObject {
     }
     
     private func stopNativeRecordingAndGetResult() async -> String? {
+        // 1. 告訴系統錄音資料結束了，這會觸發 recognitionTask 進行最後處理並回傳 isFinal
+        recognitionRequest?.endAudio()
+        
+        // ❌ [移除] 舊的寫法：不穩定的等待
+        // stopNativeAudioEngine()
+        // try? await Task.sleep(nanoseconds: 200_000_000)
+        // let text = nativeLastTranscription
+        // ...
+        
+        // ✅ [新寫法] 使用 Continuation 安全等待結果
+        let finalResult: String? = await withCheckedContinuation { continuation in
+            // 儲存這個 continuation，讓 startNativeRecording 裡的閉包可以呼叫它
+            self.recognitionContinuation = continuation
+            
+            // ⚠️ [安全機制] 設定一個 2 秒的 Timeout
+            // 萬一 Apple 的 API 沒有回傳 isFinal 也不報錯，我們不能讓 App 卡死
+            Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2秒
+                if self.recognitionContinuation != nil {
+                    print("⚠️ [Native] 等待結果逾時，強制回傳目前結果")
+                    self.recognitionContinuation?.resume(returning: self.nativeLastTranscription)
+                    self.recognitionContinuation = nil
+                }
+            }
+        }
+        
+        // 2. 確保 Audio Engine 關閉
         stopNativeAudioEngine()
         
-        // 等待緩衝
-        try? await Task.sleep(nanoseconds: 200_000_000) // 0.2s
-        
-        let text = nativeLastTranscription
-        print("🍎 [Native 結果]: \(text ?? "nil")")
-        
-        // 重置
+        // 3. 重置狀態
         nativeLastTranscription = nil
         recognitionTask = nil
         
-        return (text?.isEmpty ?? true) ? nil : text
+        print("🍎 [Native 最終結果]: \(finalResult ?? "nil")")
+        return (finalResult?.isEmpty ?? true) ? nil : finalResult
     }
     
     // MARK: - 引擎 B: WhisperKit 實作
