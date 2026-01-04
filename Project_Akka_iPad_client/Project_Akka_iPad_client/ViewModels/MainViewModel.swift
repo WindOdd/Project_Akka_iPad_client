@@ -26,8 +26,8 @@ class MainViewModel: ObservableObject {
     private var recordingTimer: Timer?
     private var fillerTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
-    // ✅ [修正] 只保留一個 synthesizer 實例，避免衝突
-    private let synthesizer = AVSpeechSynthesizer()
+    // 🔥 [修正] 改為 var，每次 TTS 前重建以解決 -66748 錯誤
+    private var synthesizer = AVSpeechSynthesizer()
     
     init() {
             setupBindings()
@@ -242,97 +242,8 @@ class MainViewModel: ObservableObject {
                                     self.chatHistory.append(aiMsg)
                                     self.statusMessage = "阿卡說話中..."
                                     
-                                    // ==========================================
-                                    // 🛡️ 步驟 1: 資源釋放 (標準程序)
-                                    // ==========================================
-                                    self.sttService.forceReleaseAudioResources()
-                                    print("--- [Debug] 資源釋放完畢 (setActive: false)，緩衝等待 (0.6s) ---")
-                                    try? await Task.sleep(nanoseconds: 600_000_000)
-                                    
-                                    // ============================================================
-                                    // 🔬 [深度診斷模式] System Status Snapshot
-                                    // ============================================================
-                                    
-                                    print("\n🔍 ======== [診斷開始: 尋找 -66748 元兇] ========")
-                                    
-                                    let textToSpeak = response.response
-                                    
-                                    await MainActor.run {
-                                        let session = AVAudioSession.sharedInstance()
-                                        
-                                        // 1. [檢查點 A] 初始狀態 (在任何修改之前)
-                                        // 如果這裡是 PlayAndRecord，代表之前的釋放失敗
-                                        print("1️⃣ [初始狀態檢查]")
-                                        print("   - Category: \(session.category.rawValue)")
-                                        print("   - Mode: \(session.mode.rawValue)")
-                                        // isOtherAudioPlaying 有時能反映系統是否還咬著資源
-                                        print("   - OtherAudioPlaying: \(session.isOtherAudioPlaying)")
-                                        
-                                        // 檢查路由：如果是 'Receiver' (聽筒)，代表路由卡死，這會導致 TTS 失敗
-                                        let currentRoute = session.currentRoute.outputs.first?.portName ?? "None"
-                                        print("   - Current Route: \(currentRoute)")
-                                        if currentRoute == "Receiver" {
-                                            print("   ⚠️ 警告: 路由卡在聽筒 (Receiver)，TTS 將無法透過喇叭播放！")
-                                        }
-                                        
-                                        // 2. [行動] 執行標準修復程序 (切換為 .playback)
-                                        print("\n2️⃣ [執行設定: .playback]")
-                                        do {
-                                            // 🔥 強制設定為 .playback (純播放)，完全避開麥克風
-                                            try session.setCategory(.playback, mode: .default, options: [])
-                                            try session.setActive(true, options: .notifyOthersOnDeactivation)
-                                            print("   ✅ Session 設定成功 (.playback)")
-                                        } catch {
-                                            print("   ❌ Session 設定失敗: \(error)")
-                                        }
-                                        
-                                        // 3. [檢查點 B] 設定後狀態確認
-                                        print("\n3️⃣ [設定後狀態確認]")
-                                        print("   - Category: \(session.category.rawValue) (預期: AVAudioSessionCategoryPlayback)")
-                                        print("   - Mode: \(session.mode.rawValue) (預期: AVAudioSessionModeDefault)")
-                                        print("   - Current Route: \(session.currentRoute.outputs.first?.portName ?? "None")")
-                                        
-                                        // 4. [測試 A] 檢查舊的 Synthesizer (看看它是不是已經壞了)
-                                        print("\n4️⃣ [測試 A: 檢查舊實體狀態]")
-                                        // 印出記憶體位址，確認我們用的是原本那個
-                                        let oldPtr = Unmanaged.passUnretained(self.synthesizer).toOpaque()
-                                        print("   - Old Synthesizer Ptr: \(oldPtr)")
-                                        print("   - IsSpeaking: \(self.synthesizer.isSpeaking)")
-                                        print("   - IsPaused: \(self.synthesizer.isPaused)")
-                                        // 我們不呼叫舊的 speak，避免干擾，但如果下面的測試成功，代表舊實體確實有問題
-                                        
-                                        // 5. [測試 B] 建立全新實體 (終極測試)
-                                        // 如果這一步成功發聲且無錯誤，證明解法是「每次播放都重建 Synthesizer」
-                                        print("\n5️⃣ [測試 B: 建立全新 Synthesizer]")
-                                        
-                                        let cleanSynthesizer = AVSpeechSynthesizer()
-                                        let utterance = AVSpeechUtterance(string: textToSpeak)
-                                        
-                                        // 套用您的語音設定邏輯 (手動複製過來以確保變數隔離)
-                                        let savedVoiceId = UserDefaults.standard.string(forKey: "tts_voice_identifier") ?? ""
-                                        if !savedVoiceId.isEmpty, let voice = AVSpeechSynthesisVoice(identifier: savedVoiceId) {
-                                            utterance.voice = voice
-                                        } else {
-                                            utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
-                                        }
-                                        let savedRate = UserDefaults.standard.float(forKey: "tts_speech_rate")
-                                        utterance.rate = savedRate > 0.0 ? savedRate : AVSpeechUtteranceDefaultSpeechRate
-                                        
-                                        print("   🔊 [Action] 呼叫 cleanSynthesizer.speak...")
-                                        cleanSynthesizer.speak(utterance)
-                                        
-                                        // ⚠️ [重要] 延長區域變數生命週期 (Life Cycle Extension)
-                                        // 這是為了防止 cleanSynthesizer 在話還沒講完就被釋放
-                                        // 在 Debug 模式下我們用簡單的 Delay 來測試，正式版會改寫法
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
-                                            // 只要引用它，它就不會死
-                                            _ = cleanSynthesizer
-                                            print("   🏁 [診斷結束] 測試區塊生命週期結束")
-                                        }
-                                        
-                                        self.statusMessage = "診斷測試中..."
-                                    }
-                                    print("🔍 ==============================================\n")
+                                    // 🔥 [正式修復] 使用重建 Synthesizer 策略播放 TTS
+                                    await self.speakWithRebuild(response.response)
                 } catch {
                     print("API Error: \(error)")
                     self.stopLatencyMasking()
@@ -371,49 +282,65 @@ class MainViewModel: ObservableObject {
             stopAndSend()
         }
     
-    // MARK: - TTS (Singleton Strategy)
-        
-        private func speak(_ text: String) async {
-            // 1. 如果正在說話，先停止
-            if synthesizer.isSpeaking {
-                synthesizer.stopSpeaking(at: .immediate)
-            }
-            
-            // 2. 確保 Session 狀態
-            await MainActor.run {
-                prepareSessionForPlayback()
-            }
-            
-            // 3. 建立發音內容
-            let utterance = AVSpeechUtterance(string: text)
-            
-            // 🔥 [修改] 套用使用者設定的聲音與語速
-            applyUserVoiceSettings(to: utterance)
-            
-            print("🔊 [TTS] 播放 (Voice: \(utterance.voice?.name ?? "Default"), Rate: \(utterance.rate)): \(text.prefix(10))...")
-            
-            // 🔥 [關鍵] 直接使用常駐的 synthesizer 實體
-            synthesizer.speak(utterance)
-            
-            // 4. 更新 UI
-            DispatchQueue.main.async {
-                self.statusMessage = "您可以繼續提問..."
-            }
-        }
+    // MARK: - TTS (Rebuild Strategy - 解決 -66748)
     
-    // 🔥 [核心] nonisolated: 脫離 MainActor，在背景執行
-    /// 🔥 [修改] 不再切換 Category，只確保 Active 與正確的路由
-        @MainActor
-        private func prepareSessionForPlayback() {
-            let session = AVAudioSession.sharedInstance()
-            do {
-                // 確保是 PlayAndRecord + DefaultToSpeaker
-                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-                try session.setActive(true)
-            } catch {
-                print("⚠️ [Audio] Session 檢查失敗: \(error)")
-            }
+    /// 🔥 [核心修復] 每次 TTS 前重建 Synthesizer
+    /// 這是解決 -66748 錯誤的唯一可靠方法
+    private func speakWithRebuild(_ text: String) async {
+        // 1. 釋放 STT 資源
+        self.sttService.forceReleaseAudioResources()
+        
+        // 2. 等待系統釋放音訊資源 (關鍵緩衝時間)
+        print("⏳ [TTS] 等待系統釋放音訊資源 (0.8s)...")
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        
+        // 3. 設定 Session 為純播放模式
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ [TTS] Session 設定為 .playback")
+        } catch {
+            print("❌ [TTS] Session 設定失敗: \(error)")
         }
+        
+        // 4. 🔥 [關鍵] 重建 Synthesizer (解決 -66748 的核心)
+        print("🔄 [TTS] 重建 AVSpeechSynthesizer...")
+        synthesizer = AVSpeechSynthesizer()
+        
+        // 5. 建立並設定發音內容
+        let utterance = AVSpeechUtterance(string: text)
+        applyUserVoiceSettings(to: utterance)
+        
+        print("🔊 [TTS] 播放: \(text.prefix(20))...")
+        synthesizer.speak(utterance)
+        
+        self.statusMessage = "您可以繼續提問..."
+    }
+    
+    /// 簡易版 TTS (用於錯誤提示等不需要釋放 STT 資源的情況)
+    private func speak(_ text: String) async {
+        // 停止當前播放
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+        
+        // 重建 Synthesizer
+        synthesizer = AVSpeechSynthesizer()
+        
+        // 設定 Session
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true)
+        } catch {
+            print("⚠️ [TTS] Session 設定失敗: \(error)")
+        }
+        
+        let utterance = AVSpeechUtterance(string: text)
+        applyUserVoiceSettings(to: utterance)
+        synthesizer.speak(utterance)
+    }
     
     // MARK: - 思考模擬動畫
     

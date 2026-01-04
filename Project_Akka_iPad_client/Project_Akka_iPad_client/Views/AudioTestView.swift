@@ -1,229 +1,238 @@
 import SwiftUI
-import AVFoundation
 import Speech
-import Combine // 確保引入 Combine 以支援 ObservableObject
-
-// MARK: - 驗證用 ViewModel
-class AudioTestViewModel: ObservableObject {
-    @Published var status = "準備就緒"
+import AVFoundation
+import Combine
+// MARK: - 驗證用 ViewModel (最終核彈級修復：強制重建 Synthesizer)
+class AudioTestViewModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var recognizedText = ""
     @Published var isRecording = false
+    @Published var statusMessage = "準備就緒"
     
-    // 🎤 錄音相關
-    private var audioEngine: AVAudioEngine?
+    // 核心元件
+    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-TW"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-TW"))
     
-    // 🔊 播放相關
-    // 每次播放都使用新的 Synthesizer 以避免舊實體損壞
-    private var currentSynthesizer: AVSpeechSynthesizer?
+    // 🔥 關鍵 1: 兩個都必須是 var，因為都要重建
+    // audioEngine: 錄音結束後重建，確保 Input Node 乾淨
+    // speechSynthesizer: 播放前重建，確保拿到新的 Connection ID (解決 -66748)
+    private var audioEngine = AVAudioEngine()
+    private var speechSynthesizer = AVSpeechSynthesizer()
     
-    // MARK: - 動作 1: 開始錄音
-    func startRecording() {
-        // 使用 Task 確保在背景執行，並回到 MainActor 更新 UI
-        Task { @MainActor in
-            print("\n🎙️ ======== [動作: 開始錄音] ========")
-            
-            // A. 清理舊戰場
-            cleanupEngine()
-            
-            // B. 重置 Session (先關再開，確保乾淨)
-            let session = AVAudioSession.sharedInstance()
-            do {
-                print("   1️⃣ [Session] 準備錄音環境...")
-                // 先嘗試解除鎖定 (雖不一定必要，但保險)
-                try? session.setActive(false)
-                
-                // 設定為錄音模式
-                try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
-                try session.setActive(true, options: .notifyOthersOnDeactivation)
-                print("      ✅ Session Active (PlayAndRecord)")
-            } catch {
-                print("      ❌ Session Error: \(error)")
-                self.status = "Session Error"
-                return
-            }
-            
-            // C. 建立全新引擎
-            print("   2️⃣ [Engine] 建立全新 AVAudioEngine")
-            let newEngine = AVAudioEngine()
-            self.audioEngine = newEngine
-            
-            self.recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-            guard let recognitionRequest = self.recognitionRequest else { return }
-            recognitionRequest.shouldReportPartialResults = true
-            
-            let inputNode = newEngine.inputNode
-            let recordingFormat = inputNode.outputFormat(forBus: 0)
-            print("      ℹ️ Input Format: \(recordingFormat)")
-            
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-                self.recognitionRequest?.append(buffer)
-            }
-            
-            newEngine.prepare()
-            
-            do {
-                try newEngine.start()
-                self.isRecording = true
-                self.status = "正在錄音...請說話"
-                self.recognizedText = ""
-                print("   3️⃣ [Engine] 啟動成功 (Running)")
-                
-                self.recognitionTask = self.speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-                    if let result = result {
-                        self?.recognizedText = result.bestTranscription.formattedString
-                    }
-                    if let error = error {
-                        print("      ⚠️ 辨識結束/錯誤: \(error.localizedDescription)")
-                    }
-                }
-            } catch {
-                print("   ❌ Engine Start Error: \(error)")
-                self.status = "Engine Start Error"
-            }
+    override init() {
+        super.init()
+        speechSynthesizer.delegate = self
+    }
+    
+    // MARK: - 錄音功能
+    
+    func toggleRecording() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startRecording()
         }
     }
     
-    // MARK: - 動作 2: 停止並複讀 (核心修改)
-    func stopAndRepeat() {
-        Task { @MainActor in
-            print("\n🛑 ======== [動作: 停止並複讀] ========")
-            
-            // 1. 徹底銷毀引擎
-            print("   1️⃣ [Cleanup] 銷毀引擎...")
-            if let engine = audioEngine {
-                if engine.isRunning {
-                    engine.stop()
-                }
-                engine.inputNode.removeTap(onBus: 0)
-                engine.reset()
-            }
-            audioEngine = nil
-            print("      🔥 Engine set to NIL")
-            
-            recognitionRequest?.endAudio()
-            recognitionRequest = nil
+    func startRecording() {
+        // 1. 確保 TTS 閉嘴
+        if speechSynthesizer.isSpeaking {
+            speechSynthesizer.stopSpeaking(at: .immediate)
+        }
+        
+        // 2. 清理舊任務
+        if recognitionTask != nil {
             recognitionTask?.cancel()
             recognitionTask = nil
+        }
+        
+        // 3. 設定 Session (.record 模式)
+        // 使用 .record 模式是最單純的，它告訴系統「我現在只要麥克風」
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            statusMessage = "Session 設定失敗: \(error.localizedDescription)"
+            return
+        }
+        
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let recognitionRequest = recognitionRequest else {
+            statusMessage = "無法建立 Request"
+            return
+        }
+        recognitionRequest.shouldReportPartialResults = true
+        
+        // 4. 設定 Input
+        let inputNode = audioEngine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        
+        // 5. 建立 Task
+        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+            guard let self = self else { return }
+            var isFinal = false
             
-            self.isRecording = false
-            self.status = "處理中 (硬體釋放)..."
-            
-            // 🔥 [關鍵修正] 加入緩衝時間，讓硬體徹底釋放麥克風
-            // 這能防止 -66748 錯誤 (Connection Invalidated)
-            print("   ⏳ [Wait] 等待 0.5 秒讓硬體釋放...")
-            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5秒
-            
-            // 2. 切換 Session 至播放模式
-            let session = AVAudioSession.sharedInstance()
-            do {
-                print("   2️⃣ [Session] 切換至 .playback (純播放)")
-                
-                // A. 先 Deactivate (掛斷電話) - 解決資源佔用
-                try? session.setActive(false)
-                
-                // B. 設定為純播放 (這會讓系統將路由導向喇叭，並切斷麥克風連結)
-                try session.setCategory(.playback, mode: .default, options: [])
-                try session.setActive(true, options: .notifyOthersOnDeactivation)
-                
-                print("      ✅ Session Active (.playback)")
-            } catch {
-                print("      ❌ Session Switch Error: \(error)")
+            if let result = result {
+                DispatchQueue.main.async {
+                    self.recognizedText = result.bestTranscription.formattedString
+                    print("辨識中：\(self.recognizedText)")
+                }
+                isFinal = result.isFinal
             }
             
-            self.status = "準備播放..."
-            
-            // 3. 播放
-            let textToSpeak = self.recognizedText.isEmpty ? "沒有聽到聲音" : self.recognizedText
-            self.speak(text: textToSpeak)
+            // 🔥 結束或錯誤處理邏輯
+            if error != nil || isFinal {
+                // A. 停止引擎
+                self.audioEngine.stop()
+                inputNode.removeTap(onBus: 0)
+                
+                // B. 重建引擎 (確保下一次錄音是全新的狀態)
+                self.audioEngine.reset()
+                self.audioEngine = AVAudioEngine()
+                print("✅ [Audio] 引擎已重建")
+                
+                self.recognitionRequest = nil
+                self.recognitionTask = nil
+                
+                let finalText = self.recognizedText
+                
+                DispatchQueue.main.async {
+                    self.isRecording = false
+                    self.statusMessage = "錄音結束"
+                    
+                    // C. 關閉 Session (掛斷電話)
+                    // 這一步會切斷所有音訊連線，導致舊的 TTS 實體失效
+                    let session = AVAudioSession.sharedInstance()
+                    do {
+                        try session.setActive(false, options: .notifyOthersOnDeactivation)
+                        print("✅ [Audio] Session 已停用 (setActive: false)")
+                    } catch {
+                        print("⚠️ [Audio] 停用失敗: \(error)")
+                    }
+                    
+                    // D. 延遲後播放
+                    // 給系統 1.0 秒的時間釋放麥克風鎖定
+                    print("⏳ [Wait] 等待 1.0 秒...")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        if !finalText.isEmpty {
+                            self.speakText()
+                        } else {
+                            self.statusMessage = "沒有聽到聲音"
+                        }
+                    }
+                }
+            }
+        }
+        
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            self.recognitionRequest?.append(buffer)
+        }
+        
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            isRecording = true
+            statusMessage = "正在錄音..."
+            print("✅ [Audio] 錄音開始")
+        } catch {
+            statusMessage = "引擎啟動失敗"
         }
     }
     
-    private func speak(text: String) {
-        print("\n🔊 ======== [動作: TTS 播放] ========")
-        print("   1️⃣ [Synthesizer] 建立全新實體")
+    func stopRecording() {
+        print("🛑 [User] 停止錄音")
+        // 這會觸發上面的 recognitionTask 閉包，執行清理與播放流程
+        recognitionRequest?.endAudio()
+        statusMessage = "處理中..."
+    }
+    
+    // MARK: - 朗讀功能 (核彈級修復)
+    
+    func speakText() {
+        print("========== 開始朗讀流程 ==========")
         
-        // 每次都建立新的 Synthesizer，確保沒有舊的 Audio Unit 殘留
-        let newSynthesizer = AVSpeechSynthesizer()
-        currentSynthesizer = newSynthesizer
+        // 1. 設定 Session 為 .playback
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            try audioSession.setCategory(.playback, mode: .default, options: [])
+            try audioSession.setActive(true, options: [])
+            print("✅ [Audio] Session 設定為 .playback")
+        } catch {
+            print("❌ [Audio] 設定失敗: \(error)")
+            statusMessage = "音訊錯誤"
+            return
+        }
         
-        let utterance = AVSpeechUtterance(string: text)
+        // 2. 🔥 [唯一解法] 強制建立新的 Synthesizer
+        // 因為舊的實體在 Session 斷開後已經失效，必須換新的才能拿到新的 Connection ID
+        print("🔄 [TTS] 重建 AVSpeechSynthesizer...")
+        speechSynthesizer = AVSpeechSynthesizer()
+        speechSynthesizer.delegate = self
+        
+        // 3. 播放
+        let utterance = AVSpeechUtterance(string: recognizedText)
         utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
         utterance.rate = 0.5
         
-        print("   2️⃣ [Speak] 呼叫 speak")
-        newSynthesizer.speak(utterance)
-        status = "正在播放: \(text)"
+        print("🔊 [TTS] 呼叫 speak: \(recognizedText)")
+        statusMessage = "正在朗讀..."
+        speechSynthesizer.speak(utterance)
     }
     
-    private func cleanupEngine() {
-        print("   🧹 [Cleanup] 清理殘留引擎...")
-        audioEngine?.stop()
-        audioEngine = nil
-        recognitionTask?.cancel()
-        recognitionTask = nil
+    // MARK: - Delegate
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        print("✅ [TTS] 朗讀完成")
+        DispatchQueue.main.async {
+            self.statusMessage = "朗讀完成"
+        }
     }
 }
 
-// MARK: - 驗證用 View
+// MARK: - View
 struct AudioTestView: View {
-    @StateObject var vm = AudioTestViewModel()
+    @StateObject private var vm = AudioTestViewModel()
     
     var body: some View {
         VStack(spacing: 30) {
-            Text("Audio Crash 驗證器")
+            Text("Audio Crash 驗證器 (最終版)")
                 .font(.largeTitle)
                 .bold()
                 .padding(.top)
             
-            // Console Log 提示
-            Text("請觀察 Xcode Console 的詳細 Log")
-                .font(.caption)
+            Text(vm.statusMessage)
+                .font(.headline)
                 .foregroundColor(.gray)
             
-            Divider()
-            
-            Text(vm.status)
-                .font(.headline)
-                .foregroundColor(.blue)
-                .padding()
-            
-            Text(vm.recognizedText.isEmpty ? "(等待語音輸入...)" : vm.recognizedText)
-                .font(.title2)
-                .padding()
-                .frame(maxWidth: .infinity)
-                .frame(height: 150)
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(10)
-                .padding(.horizontal)
+            ScrollView {
+                Text(vm.recognizedText.isEmpty ? "..." : vm.recognizedText)
+                    .font(.title2)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+            }
+            .frame(height: 150)
+            .background(Color.gray.opacity(0.1))
+            .cornerRadius(10)
+            .padding(.horizontal)
             
             Button(action: {
-                if vm.isRecording {
-                    vm.stopAndRepeat()
-                } else {
-                    vm.startRecording()
-                }
+                vm.toggleRecording()
             }) {
                 VStack {
                     Image(systemName: vm.isRecording ? "stop.circle.fill" : "mic.circle.fill")
                         .resizable()
                         .frame(width: 80, height: 80)
                         .foregroundColor(vm.isRecording ? .red : .blue)
-                    
-                    Text(vm.isRecording ? "停止並複讀" : "開始錄音")
-                        .font(.headline)
-                        .foregroundColor(.primary)
+                    Text(vm.isRecording ? "停止錄音" : "開始錄音")
                 }
             }
             
             Spacer()
             
-            Text("驗證重點：\n1. 錄音後等待 0.5s\n2. 觀察 Log 是否成功切換為 .playback\n3. 必須聽到聲音")
+            Text("策略：強制重建 Synthesizer\n解決 -66748 與 mDataByteSize 0")
                 .font(.caption)
-                .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
                 .padding(.bottom)
         }
     }

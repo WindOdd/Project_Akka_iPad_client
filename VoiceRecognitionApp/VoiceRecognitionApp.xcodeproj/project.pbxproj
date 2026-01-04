@@ -10,9 +10,22 @@
 		99E2B6722F0A24B8008CF34F /* VoiceRecognitionApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoiceRecognitionApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		99E2B6812F0A24EE008CF34F /* Exceptions for "VoiceRecognitionApp" folder in "VoiceRecognitionApp" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 99E2B6712F0A24B8008CF34F /* VoiceRecognitionApp */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		99E2B6742F0A24B8008CF34F /* VoiceRecognitionApp */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				99E2B6812F0A24EE008CF34F /* Exceptions for "VoiceRecognitionApp" folder in "VoiceRecognitionApp" target */,
+			);
 			path = VoiceRecognitionApp;
 			sourceTree = "<group>";
 		};
@@ -256,11 +269,15 @@
 				DEVELOPMENT_TEAM = U2L7ZJ7SL7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = VoiceRecognitionApp/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "需要麥克風權限來進行語音辨識";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "需要語音辨識權限來轉換語音為文字";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -288,11 +305,15 @@
 				DEVELOPMENT_TEAM = U2L7ZJ7SL7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = VoiceRecognitionApp/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "需要麥克風權限來進行語音辨識";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "需要語音辨識權限來轉換語音為文字";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
