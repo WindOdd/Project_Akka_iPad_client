@@ -147,11 +147,15 @@ class STTService: ObservableObject {
     // MARK: - 引擎 A: Apple Native 實作
     
     private func startNativeRecording() async {
-        // 1. 設定 Session (暴力重置)
         let session = AVAudioSession.sharedInstance()
-        try? session.setActive(false)
-        try? session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
-        try? session.setActive(true, options: .notifyOthersOnDeactivation)
+        do {
+            // 🔥 [修改] 直接切換 Mode 為 measurement (適合語音辨識)，保持 Active
+            // 移除 setActive(false) 以避免硬體重啟延遲
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setActive(true)
+            } catch {
+                print("⚠️ [STT] Session 設定失敗: \(error)")
+            }
         
         // 2. 準備 Request
         stopNativeAudioEngine() // 確保乾淨
