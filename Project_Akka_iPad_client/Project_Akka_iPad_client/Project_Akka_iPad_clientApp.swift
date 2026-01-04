@@ -14,7 +14,7 @@ struct Project_Akka_iPad_clientApp: App {
         }
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            AudioTestView()
         }
     }
 }

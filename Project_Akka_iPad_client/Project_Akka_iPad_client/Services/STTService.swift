@@ -45,7 +45,7 @@ class STTService: ObservableObject {
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-TW"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
-    private let audioEngine = AVAudioEngine()
+    private var audioEngine: AVAudioEngine? // 改成 Optional var
     private var nativeLastTranscription: String?
     // 👇 [新增] 用來暫存等待中的 Continuation
     private var recognitionContinuation: CheckedContinuation<String?, Never>?
@@ -152,77 +152,101 @@ class STTService: ObservableObject {
     // MARK: - 引擎 A: Apple Native 實作
     
     private func startNativeRecording() async {
-        let session = AVAudioSession.sharedInstance()
-        do {
-            // 🔥 [修改] 直接切換 Mode 為 measurement (適合語音辨識)，保持 Active
-            // 移除 setActive(false) 以避免硬體重啟延遲
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
-            try session.setActive(true)
+            print("🎙️ [Native] 初始化錄音流程...")
+            
+            // 1. 🔥 [關鍵修正] 先執行清理！
+            // 必須在設定 Session 之前執行，因為這函式裡面會 setActive(false)
+            stopNativeAudioEngine()
+            
+            // 2. 設定 Session (現在執行才是對的，會重新 setActive(true))
+            let session = AVAudioSession.sharedInstance()
+            do {
+                try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
+                try session.setActive(true, options: .notifyOthersOnDeactivation)
             } catch {
                 print("⚠️ [STT] Session 設定失敗: \(error)")
             }
-        
-        // 2. 準備 Request
-        stopNativeAudioEngine() // 確保乾淨
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        guard let recognitionRequest = recognitionRequest else { return }
-        recognitionRequest.shouldReportPartialResults = true
-        
-        // 3. 設定 Input Node
-        let inputNode = audioEngine.inputNode
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-            recognitionRequest.append(buffer)
-        }
-        
-        // 4. 開始
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            self.statusMessage = "正在聆聽 (Native)..."
             
-            // 啟動 Task
-            // 👇 [修改] 這裡的閉包內容要更新
-                    recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-                        guard let self = self else { return }
+            // 3. 🔥 [重建引擎] 建立全新的 AVAudioEngine
+            // 這是解決 -66748 的核心：每次錄音都用新的引擎
+            audioEngine = AVAudioEngine()
+            // 建立區域變數以方便後續操作 (Shadowing self.audioEngine)
+            guard let audioEngine = audioEngine else {
+                print("❌ [Native] 無法建立 AudioEngine")
+                return
+            }
+            
+            // 4. 準備 Request
+            recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+            guard let recognitionRequest = recognitionRequest else { return }
+            recognitionRequest.shouldReportPartialResults = true
+            
+            // 5. 設定 Input Node
+            let inputNode = audioEngine.inputNode
+            let recordingFormat = inputNode.outputFormat(forBus: 0)
+            
+            // 安裝 Tap
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+                recognitionRequest.append(buffer)
+            }
+            
+            // 6. 開始錄音
+            audioEngine.prepare()
+            do {
+                try audioEngine.start()
+                self.statusMessage = "正在聆聽 (Native)..."
+                
+                // 7. 啟動辨識 Task
+                recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+                    guard let self = self else { return }
+                    
+                    if let result = result {
+                        self.nativeLastTranscription = result.bestTranscription.formattedString
                         
-                        if let result = result {
-                            // 1. 實時更新文字
-                            self.nativeLastTranscription = result.bestTranscription.formattedString
-                            
-                            // 2. ✅ [新增] 如果是最終結果 (isFinal)，就喚醒等待中的 Continuation
-                            if result.isFinal {
-                                self.recognitionContinuation?.resume(returning: self.nativeLastTranscription)
-                                self.recognitionContinuation = nil
-                            }
-                        }
-                        
-                        if let error = error {
-                            self.stopNativeAudioEngine()
-                            
-                            // 3. ✅ [新增] 如果發生錯誤，也要喚醒 Continuation (回傳目前的結果或 nil)
-                            // 這樣 stopNativeRecordingAndGetResult 就不會一直卡住
+                        if result.isFinal {
                             self.recognitionContinuation?.resume(returning: self.nativeLastTranscription)
                             self.recognitionContinuation = nil
                         }
                     }
-                    print("🎙️ [Native] 開始錄音")
-                } catch {
-                    print("❌ [Native] 啟動失敗: \(error)")
+                    
+                    if let error = error {
+                        // 這裡不需要呼叫 stopNativeAudioEngine，因為可能會跟外部的 stop 衝突
+                        // 只要確保 Continuation 有回應即可
+                        print("⚠️ [Native] 辨識過程錯誤/結束: \(error.localizedDescription)")
+                        self.recognitionContinuation?.resume(returning: self.nativeLastTranscription)
+                        self.recognitionContinuation = nil
+                    }
+                }
+                print("🎙️ [Native] 錄音引擎啟動成功")
+            } catch {
+                print("❌ [Native] 啟動失敗: \(error)")
+            }
+        }
+    private func stopNativeAudioEngine() {
+            // 1. 銷毀引擎 (維持原本邏輯)
+            if let engine = audioEngine {
+                if engine.isRunning {
+                    engine.stop()
+                    engine.inputNode.removeTap(onBus: 0)
+                    engine.reset()
                 }
             }
-    
-    private func stopNativeAudioEngine() {
-        if audioEngine.isRunning {
-           audioEngine.stop()
-           audioEngine.inputNode.removeTap(onBus: 0)
-        // 🔥 [新增] 強制重置引擎，釋放硬體資源，解決 TTS -66748 錯誤
-            audioEngine.reset()
+            audioEngine = nil
+            
+            // 2. 清理 Request
+            recognitionRequest?.endAudio()
+            recognitionRequest = nil
+            
+            // 3. 🔥 [新增] 強制取消辨識任務
+            // 避免 SFSpeechRecognitionTask 在背景還咬著資源
+            recognitionTask?.cancel()
+            recognitionTask = nil
+            
+            // 4. ❌ [移除] 不要執行 setActive(false)！
+            // 我們保持 Session 為 Active，讓 MainViewModel 直接切換 Category 即可。
+            // 這能避免 "connection invalidated" 導致的 -66748 錯誤。
+            print("🛡️ [STTService] 引擎已銷毀，Session 保持 Active 等待切換...")
         }
-        recognitionRequest?.endAudio()
-        recognitionRequest = nil
-        // recognitionTask 不 cancel，保留結果
-     }
     
     private func stopNativeRecordingAndGetResult() async -> String? {
         // 1. 告訴系統錄音資料結束了，這會觸發 recognitionTask 進行最後處理並回傳 isFinal
