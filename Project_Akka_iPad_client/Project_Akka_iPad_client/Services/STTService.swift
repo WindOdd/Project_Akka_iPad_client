@@ -209,13 +209,15 @@ class STTService: ObservableObject {
     
     private func stopNativeAudioEngine() {
         if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
+           audioEngine.stop()
+           audioEngine.inputNode.removeTap(onBus: 0)
+        // 🔥 [新增] 強制重置引擎，釋放硬體資源，解決 TTS -66748 錯誤
+            audioEngine.reset()
         }
         recognitionRequest?.endAudio()
         recognitionRequest = nil
         // recognitionTask 不 cancel，保留結果
-    }
+     }
     
     private func stopNativeRecordingAndGetResult() async -> String? {
         // 1. 告訴系統錄音資料結束了，這會觸發 recognitionTask 進行最後處理並回傳 isFinal

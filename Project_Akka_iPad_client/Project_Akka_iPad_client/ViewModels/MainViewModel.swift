@@ -243,9 +243,9 @@ class MainViewModel: ObservableObject {
                     self.chatHistory.append(aiMsg)
                     self.statusMessage = "阿卡說話中..."
                     //}
-                    // 🔥 [Fix] 增加緩衝時間，防止與錄音結束撞車導致 Crash (-66748)
-                    try? await Task.sleep(nanoseconds: 600_000_000) // 0.6 秒
-                    // 4. 播放 TTS (直接播放 API 回傳的文字)
+                    print("--- [Debug] 開始等待 ---")
+                    try? await Task.sleep(nanoseconds: 1_500_000_000) // 0.6 秒
+                    print("--- [Debug] 等待結束，開始執行下一動作 ---")
                     await speak(response.response)
                     
                 } catch {
