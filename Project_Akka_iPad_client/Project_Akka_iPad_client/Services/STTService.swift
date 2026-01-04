@@ -135,7 +135,12 @@ class STTService: ObservableObject {
             await startWhisperRecording()
         }
     }
-    
+    /// 強制釋放錄音引擎資源 (解決 mDataByteSize 0 錯誤)
+    func forceReleaseAudioResources() {
+        print("🛡️ [STTService] 外部呼叫：強制釋放音訊資源")
+        // 呼叫原本內部的停止邏輯
+        stopNativeAudioEngine()
+    }
     func stopAndTranscribe() async -> String? {
         if currentModel.isNative {
             return await stopNativeRecordingAndGetResult()

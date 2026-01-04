@@ -243,10 +243,20 @@ class MainViewModel: ObservableObject {
                     self.chatHistory.append(aiMsg)
                     self.statusMessage = "阿卡說話中..."
                     //}
-                    print("--- [Debug] 開始等待 ---")
-                    try? await Task.sleep(nanoseconds: 1_500_000_000) // 0.6 秒
-                    print("--- [Debug] 等待結束，開始執行下一動作 ---")
-                    await speak(response.response)
+                    // 1. 強制釋放錄音資源 (解決 IPCAUClient / mDataByteSize 0 錯誤)
+                    // 這是關鍵！確保麥克風完全讓出
+                    self.sttService.forceReleaseAudioResources()
+                    print("--- [Debug] 資源釋放完畢，緩衝等待 (0.6s) ---")
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    // 2. 確保在主執行緒播放 (解決 unsafeForcedSync 錯誤)
+                    // 雖然 MainViewModel 是 MainActor，但在 Task 中明確切換更安全
+                    await MainActor.run {
+                    //這裡呼叫原本的 speak，它會負責設定 AudioSession 為 Playback
+                        _ = Task { await self.speak(response.response) }
+                    }
+                    // ==========================================
+                    // 修正結束
+                   // ==========================================
                     
                 } catch {
                     print("API Error: \(error)")
